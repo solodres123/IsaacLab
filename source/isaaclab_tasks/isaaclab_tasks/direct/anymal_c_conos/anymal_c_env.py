@@ -26,6 +26,12 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
+
+#conos
+from isaaclab.markers import VisualizationMarkers
+from .waypoint import WAYPOINT_CFG
+
+
 ##
 # Pre-defined configs
 ##
@@ -70,6 +76,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     action_space = 12
     observation_space = 48
     state_space = 0
+    waypoint_cfg = WAYPOINT_CFG
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -110,10 +117,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     )
 
     # reward scales
-    lin_vel_reward_scale = 1.0
-    yaw_rate_reward_scale = 0.5
-    z_vel_reward_scale = -2.0
-    ang_vel_reward_scale = -0.05
+
     joint_torque_reward_scale = -2.5e-5
     joint_accel_reward_scale = -2.5e-7
     action_rate_reward_scale = -0.01
@@ -122,10 +126,13 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     flat_orientation_reward_scale = -5.0
 
 
+
 @configclass
 class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     # env
-    observation_space = 235
+    #observation_space = 235
+    #conos
+    observation_space = 238
 
 #    terrain = TerrainImporterCfg(
 #        prim_path="/World/ground",
@@ -196,10 +203,10 @@ class AnymalCEnv(DirectRLEnv):
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "track_lin_vel_xy_exp",
-                "track_ang_vel_z_exp",
-                "lin_vel_z_l2",
-                "ang_vel_xy_l2",
+
+                "position_progress",
+                "target_heading",
+                "goal_reached",
                 "dof_torques_l2",
                 "dof_acc_l2",
                 "action_rate_l2",
@@ -212,6 +219,25 @@ class AnymalCEnv(DirectRLEnv):
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*FOOT")
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*THIGH")
+
+
+        # los de los conos
+        self.env_spacing = self.scene.cfg.env_spacing
+        self._goal_reached = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
+        self.task_completed = torch.zeros((self.num_envs), device=self.device, dtype=torch.bool)
+        self._num_goals = 10
+        self._target_positions = torch.zeros((self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32)
+        self._markers_pos = torch.zeros((self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32)
+        self.course_length_coefficient = 2.5
+        self.course_width_coefficient = 2.0
+        self.position_tolerance = 0.15 #0.15
+        self.goal_reached_bonus = 10.0 #10.0
+        self.position_progress_weight = 3.0 #1.0
+        self.heading_coefficient = 0.25 #0.25
+        self.heading_progress_weight = 0.5 #0.05
+        self._target_index = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
+
+
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -231,6 +257,11 @@ class AnymalCEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+
+        #conos
+        self.waypoints = VisualizationMarkers(self.cfg.waypoint_cfg)
+        self.object_state = []
+
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone()
         self._processed_actions = self.cfg.action_scale * self._actions + self._robot.data.default_joint_pos
@@ -240,6 +271,21 @@ class AnymalCEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
+
+        #conos
+        current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]
+        self._position_error_vector = current_target_positions - self._robot.data.root_pos_w[:, :2]
+        self._previous_position_error = self._position_error.clone()
+        self._position_error = torch.norm(self._position_error_vector, dim=-1)
+
+        heading = self._robot.data.heading_w
+        target_heading_w = torch.atan2(
+            self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],
+            self._target_positions[self._robot._ALL_INDICES, self._target_index, 0] - self._robot.data.root_link_pos_w[:, 0],
+        )
+        self.target_heading_error = torch.atan2(torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading))
+
+
         height_data = None
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
             height_data = (
@@ -257,6 +303,11 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.joint_vel,
                     height_data,
                     self._actions,
+
+                    #conos
+                    self._position_error.unsqueeze(dim=1),
+                    torch.cos(self.target_heading_error).unsqueeze(dim=1),
+                    torch.sin(self.target_heading_error).unsqueeze(dim=1),
                 )
                 if tensor is not None
             ],
@@ -266,16 +317,28 @@ class AnymalCEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        # linear velocity tracking
-        lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1)
-        lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
-        # yaw rate tracking
-        yaw_rate_error = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
-        yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
-        # z velocity tracking
-        z_vel_error = torch.square(self._robot.data.root_lin_vel_b[:, 2])
-        # angular velocity x/y
-        ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
+    # Linear velocity tracking
+    # lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1)
+    # lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
+
+    # Yaw rate tracking
+    # yaw_rate_error = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
+    # yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
+
+    # Z velocity tracking
+    # z_vel_error = torch.square(self._robot.data.root_lin_vel_b[:, 2])
+
+    # Angular velocity x/y
+    # ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
+
+    # Conos
+       
+        position_progress_rew = self._previous_position_error - self._position_error
+        target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
+        goal_reached = self._position_error < self.position_tolerance
+        self._target_index = self._target_index + goal_reached
+        self.task_completed = self._target_index > (self._num_goals -1)
+        self._target_index = self._target_index % self._num_goals
         # joint torques
         joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
         # joint acceleration
@@ -287,6 +350,7 @@ class AnymalCEnv(DirectRLEnv):
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]
         air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1) * (
             torch.norm(self._commands[:, :2], dim=1) > 0.1
+
         )
         # undesired contacts
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
@@ -298,10 +362,10 @@ class AnymalCEnv(DirectRLEnv):
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
 
         rewards = {
-            "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
-            "lin_vel_z_l2": z_vel_error * self.cfg.z_vel_reward_scale * self.step_dt,
-            "ang_vel_xy_l2": ang_vel_error * self.cfg.ang_vel_reward_scale * self.step_dt,
+            #conos
+            "position_progress": position_progress_rew * self.position_progress_weight * self.step_dt,
+            "target_heading": target_heading_rew * self.heading_progress_weight * self.step_dt,
+            "goal_reached": goal_reached * self.goal_reached_bonus * self.step_dt,
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
@@ -326,6 +390,7 @@ class AnymalCEnv(DirectRLEnv):
             env_ids = self._robot._ALL_INDICES
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
+        num_reset = len(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf[:] = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
@@ -341,6 +406,42 @@ class AnymalCEnv(DirectRLEnv):
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        #conos
+
+        self._target_positions[env_ids, :, :] = 0.0
+        self._markers_pos[env_ids, :, :] = 0.0
+
+
+        spacing = 2 / self._num_goals
+        target_positions = torch.arange(-0.8, 1.1, spacing, device=self.device) * self.env_spacing / self.course_length_coefficient
+        self._target_positions[env_ids, :len(target_positions), 0] = target_positions
+        self._target_positions[env_ids, :, 1] = torch.rand((num_reset, self._num_goals), dtype=torch.float32, device=self.device) + self.course_length_coefficient
+        self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
+
+
+        self._target_index[env_ids] = 0
+        self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]
+        visualize_pos = self._markers_pos.view(-1, 3)
+        self.waypoints.visualize(translations=visualize_pos)
+
+
+        current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]
+        self._position_error_vector = current_target_positions[:, :2] - self._robot.data.root_pos_w[:, :2]
+        self._position_error = torch.norm(self._position_error_vector, dim=-1)
+        self._previous_position_error = self._position_error.clone()
+
+        
+        heading = self._robot.data.heading_w[:]
+        target_heading_w = torch.atan2( 
+            self._target_positions[:, 0, 1] - self._robot.data.root_pos_w[:, 1],
+            self._target_positions[:, 0, 0] - self._robot.data.root_pos_w[:, 0],
+        )
+        self._heading_error = torch.atan2(torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading))
+        self._previous_heading_error = self._heading_error.clone()
+
+
+
+
         # Logging
         extras = dict()
         for key in self._episode_sums.keys():
