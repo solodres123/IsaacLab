@@ -105,7 +105,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=4.0, replicate_physics=True
+        num_envs=4096, env_spacing=10.0, replicate_physics=True
     )
 
     # events
@@ -126,7 +126,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     joint_accel_reward_scale = -2.5e-7
     action_rate_reward_scale = -0.01
     feet_air_time_reward_scale = 0.5
-    undesired_contact_reward_scale = -1.0
+    undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
 
 
@@ -247,13 +247,13 @@ class AnymalCEnv(DirectRLEnv):
         self._markers_pos = torch.zeros(
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
-        self.course_length_coefficient = 2.5
-        self.course_width_coefficient = 2.0
+        self.course_length_coefficient = 15
+        self.course_width_coefficient = 15
         self.position_tolerance = 0.15  # 0.15
-        self.goal_reached_bonus = 10.0  # 10.0
-        self.position_progress_weight = 3.0  # 1.0
+        self.goal_reached_bonus = 100.0  # 10.0
+        self.position_progress_weight = 10000.0  # 1.0
         self.heading_coefficient = 0.25  # 0.25
-        self.heading_progress_weight = 0.5  # 0.05
+        self.heading_progress_weight = 0.05  # 0.05
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -324,6 +324,9 @@ class AnymalCEnv(DirectRLEnv):
             [
                 tensor
                 for tensor in (
+                    self._position_error.unsqueeze(dim=1),
+                    torch.cos(self.target_heading_error).unsqueeze(dim=1),
+                    torch.sin(self.target_heading_error).unsqueeze(dim=1),
                     self._robot.data.root_lin_vel_b,
                     self._robot.data.root_ang_vel_b,
                     self._robot.data.projected_gravity_b,
@@ -332,10 +335,7 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.joint_vel,
                     height_data,
                     self._actions,
-                    # conos
-                    self._position_error.unsqueeze(dim=1),
-                    torch.cos(self.target_heading_error).unsqueeze(dim=1),
-                    torch.sin(self.target_heading_error).unsqueeze(dim=1),
+
                 )
                 if tensor is not None
             ],
@@ -369,6 +369,17 @@ class AnymalCEnv(DirectRLEnv):
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
+
+
+
+
+        one_hot_encoded = torch.nn.functional.one_hot(self._target_index.long(), num_classes=self._num_goals)
+        marker_indices = one_hot_encoded.view(-1).tolist()
+        self.waypoints.visualize(marker_indices=marker_indices)
+
+
+
+
         # joint torques
         joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
         # joint acceleration
@@ -404,13 +415,9 @@ class AnymalCEnv(DirectRLEnv):
 
         rewards = {
             # conos
-            "position_progress": position_progress_rew
-            * self.position_progress_weight
-            * self.step_dt,
-            "target_heading": target_heading_rew
-            * self.heading_progress_weight
-            * self.step_dt,
-            "goal_reached": goal_reached * self.goal_reached_bonus * self.step_dt,
+            "position_progress": position_progress_rew * self.position_progress_weight,
+            "target_heading": target_heading_rew * self.heading_progress_weight,
+            "goal_reached": goal_reached * self.goal_reached_bonus,
             "dof_torques_l2": joint_torques
             * self.cfg.joint_torque_reward_scale
             * self.step_dt,
@@ -436,23 +443,30 @@ class AnymalCEnv(DirectRLEnv):
             self._episode_sums[key] += value
         return reward
 
+    #def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+    #    time_out = self.episode_length_buf >= self.max_episode_length - 1
+    #    net_contact_forces = self._contact_sensor.data.net_forces_w_history
+    #    died = torch.any(
+    #        torch.max(
+    #            torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
+    #        )[0]
+    #        > 1.0,
+    #        dim=1,
+    #    )
+    #    return died, time_out
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        time_out = self.episode_length_buf >= self.max_episode_length - 1
-        net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        died = torch.any(
-            torch.max(
-                torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
-            )[0]
-            > 1.0,
-            dim=1,
-        )
-        return died, time_out
+        task_failed = self.episode_length_buf > self.max_episode_length
+        return task_failed, self.task_completed
+
+
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
         self._robot.reset(env_ids)  # type: ignore
         super()._reset_idx(env_ids)  # type: ignore
+
         num_reset = len(env_ids)
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
@@ -474,26 +488,26 @@ class AnymalCEnv(DirectRLEnv):
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)  # type: ignore
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  # type: ignore
         # conos
-
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
 
-        spacing = 2 / self._num_goals
-        target_positions = (
-            torch.arange(-0.8, 1.1, spacing, device=self.device)
-            * self.env_spacing
-            / self.course_length_coefficient
+        # Define el rango de dispersión en el área (ajústalo según tu escena)
+        x_range = (-4.0, 4.0)
+        y_range = (-4.0, 4.0)
+
+        # Generar posiciones aleatorias en el área definida
+        self._target_positions[env_ids, :, 0] = (
+            torch.rand((num_reset, self._num_goals), device=self.device)
+            * (x_range[1] - x_range[0]) + x_range[0]
         )
-        self._target_positions[env_ids, : len(target_positions), 0] = target_positions
+
         self._target_positions[env_ids, :, 1] = (
-            torch.rand(
-                (num_reset, self._num_goals), dtype=torch.float32, device=self.device
-            )
-            + self.course_length_coefficient
+            torch.rand((num_reset, self._num_goals), device=self.device)
+            * (y_range[1] - y_range[0]) + y_range[0]
         )
-        self._target_positions[env_ids, :] += self.scene.env_origins[
-            env_ids, :2
-        ].unsqueeze(1)
+
+        # Aplicar el desplazamiento por entorno
+        self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
 
         self._target_index[env_ids] = 0
         self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]
