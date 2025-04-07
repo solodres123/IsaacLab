@@ -127,7 +127,6 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     feet_air_time_reward_scale = 0.5
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
-    base_contact_reward_scale = -100.0  # Fuerte penalización cuando la base toca el suelo
 
 
 @configclass
@@ -223,15 +222,13 @@ class AnymalCEnv(DirectRLEnv):
                 "feet_air_time",
                 "undesired_contacts",
                 "flat_orientation_l2",
-                "base_contact"
             ]
         }
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*FOOT")
-        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(
-            ".*THIGH"
-        )
+        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*THIGH")
+        self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
 
         # los de los conos
         self.env_spacing = self.scene.cfg.env_spacing
@@ -248,13 +245,13 @@ class AnymalCEnv(DirectRLEnv):
         self._markers_pos = torch.zeros(
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
-        self.course_length_coefficient = 15
-        self.course_width_coefficient = 15
+        self.course_length_coefficient = 15  # 15
+        self.course_width_coefficient = 15  # 15
         self.position_tolerance = 0.15  # 0.15
-        self.goal_reached_bonus = 100.0  # 10.0
-        self.position_progress_weight = 10000.0  # 1.0
+        self.goal_reached_bonus = 3.0  # 10.0
+        self.position_progress_weight = 200.0  # 1.0  # 5000.0
         self.heading_coefficient = 0.25  # 0.25
-        self.heading_progress_weight = 0.05  # 0.05
+        self.heading_progress_weight = 0.02  # 0.05
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -362,7 +359,7 @@ class AnymalCEnv(DirectRLEnv):
 
         # Conos
 
-        position_progress_rew = self._previous_position_error - self._position_error
+        position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
         target_heading_rew = torch.exp(
             -torch.abs(self.target_heading_error) / self.heading_coefficient
         )
@@ -403,20 +400,11 @@ class AnymalCEnv(DirectRLEnv):
             > 1.0
         )
         contacts = torch.sum(is_contact, dim=1)
+
         # flat orientation
         flat_orientation = torch.sum(
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
         )
-
-        # Detectar contacto de la base con el suelo
-        net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        base_contact = torch.any(
-            torch.max(
-                torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
-            )[0]
-            > 1.0,
-            dim=1,
-        ).float()
 
         rewards = {
             # conos
@@ -441,8 +429,7 @@ class AnymalCEnv(DirectRLEnv):
             "flat_orientation_l2": flat_orientation
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
-            # Nueva penalización por contacto de la base
-            "base_contact": base_contact * self.cfg.base_contact_reward_scale,
+            
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging
@@ -451,6 +438,7 @@ class AnymalCEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         # Detectar si la base del robot toca el suelo
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
