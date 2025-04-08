@@ -222,6 +222,7 @@ class AnymalCEnv(DirectRLEnv):
                 "feet_air_time",
                 "undesired_contacts",
                 "flat_orientation_l2",
+                "base_contact_penalty",  # Add this if it's not already there
             ]
         }
         # Get specific body indices
@@ -252,9 +253,18 @@ class AnymalCEnv(DirectRLEnv):
         self.position_progress_weight = 200.0  # 1.0  # 5000.0
         self.heading_coefficient = 0.25  # 0.25
         self.heading_progress_weight = 0.02  # 0.05
+        self.base_contact_penalty_weight = -5  # -50
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
+
+        # Add persistent tracking for base contacts to avoid false positives
+        self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._base_contact_threshold = 3  # Number of consecutive frames to confirm base contact
+        
+        # Add termination reason tracking
+        self._termination_reason = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        # 0: not terminated, 1: base contact, 2: timeout, 3: task completed
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -352,9 +362,6 @@ class AnymalCEnv(DirectRLEnv):
         # yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
 
         # Z velocity tracking
-        # z_vel_error = torch.square(self._robot.data.root_lin_vel_b[:, 2])
-
-        # Angular velocity x/y
         # ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
 
         # Conos
@@ -401,6 +408,14 @@ class AnymalCEnv(DirectRLEnv):
         )
         contacts = torch.sum(is_contact, dim=1)
 
+        base_contact_forces = torch.max(
+            torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
+        )[0]
+        
+        base_contact_penalty = torch.sum(base_contact_forces > 1.5, dim=1)  # Increased threshold from 1.0 to 1.5
+ 
+        
+
         # flat orientation
         flat_orientation = torch.sum(
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
@@ -414,11 +429,11 @@ class AnymalCEnv(DirectRLEnv):
             "dof_torques_l2": joint_torques
             * self.cfg.joint_torque_reward_scale
             * self.step_dt,
-            "dof_acc_l2": joint_accel
-            * self.cfg.joint_accel_reward_scale
-            * self.step_dt,
             "action_rate_l2": action_rate
             * self.cfg.action_rate_reward_scale
+            * self.step_dt,
+            "dof_acc_l2": joint_accel
+            * self.cfg.joint_accel_reward_scale
             * self.step_dt,
             "feet_air_time": air_time
             * self.cfg.feet_air_time_reward_scale
@@ -429,8 +444,9 @@ class AnymalCEnv(DirectRLEnv):
             "flat_orientation_l2": flat_orientation
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
-            
+            "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
         }
+        
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging
         for key, value in rewards.items():
@@ -438,18 +454,33 @@ class AnymalCEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-
+        # Track time outs
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        # Detectar si la base del robot toca el suelo
+        
+        # Detect if robot's base touches the ground with persistence check
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        base_contact = torch.any(
+        current_base_contact = torch.any(
             torch.max(
                 torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
             )[0]
-            > 1.0,
+            > 1.5,  # Increased threshold from 1.0 to 1.5
             dim=1,
         )
-        # Se termina el episodio si hay contacto con la base o si se completa la tarea
+        
+        # Increment counter for environments with base contact
+        self._base_contact_counter[current_base_contact] += 1
+        # Reset counter for environments without base contact
+        self._base_contact_counter[~current_base_contact] = 0
+        
+        # Only consider base contact if it persists for multiple frames
+        base_contact = self._base_contact_counter >= self._base_contact_threshold
+        
+        # Set termination reasons
+        self._termination_reason[:] = 0
+        self._termination_reason[base_contact] = 1
+        self._termination_reason[time_out & ~base_contact] = 2
+        self._termination_reason[self.task_completed & ~base_contact & ~time_out] = 3
+        
         return base_contact | time_out, self.task_completed
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -459,11 +490,20 @@ class AnymalCEnv(DirectRLEnv):
         super()._reset_idx(env_ids)  # type: ignore
 
         num_reset = len(env_ids)
+        
+        # Always reset episode length buffer for reset environments
+        self.episode_length_buf[env_ids] = 0
+        
+        # For full reset, spread out to avoid spikes
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf[:] = torch.randint_like(
-                self.episode_length_buf, high=int(self.max_episode_length)
+                self.episode_length_buf, high=int(self.max_episode_length / 4)
             )
+            
+        # Reset base contact counters
+        self._base_contact_counter[env_ids] = 0
+            
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         # Sample new commands
@@ -535,10 +575,14 @@ class AnymalCEnv(DirectRLEnv):
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
         extras = dict()
-        extras["Episode_Termination/base_contact"] = torch.count_nonzero(
-            self.reset_terminated[env_ids]
-        ).item()
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(
-            self.reset_time_outs[env_ids]
-        ).item()
+        
+        # Track termination reasons more clearly
+        base_contact_count = torch.sum(self._termination_reason[env_ids] == 1).item()
+        timeout_count = torch.sum(self._termination_reason[env_ids] == 2).item()
+        task_complete_count = torch.sum(self._termination_reason[env_ids] == 3).item()
+        
+        extras["Episode_Termination/base_contact"] = base_contact_count
+        extras["Episode_Termination/time_out"] = timeout_count
+        extras["Episode_Termination/task_completed"] = task_complete_count
+        
         self.extras["log"].update(extras)
