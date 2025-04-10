@@ -25,7 +25,6 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
-
 # conos
 from isaaclab.markers import VisualizationMarkers
 from .waypoint import WAYPOINT_CFG
@@ -72,7 +71,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     decimation = 4
     action_scale = 0.5
     action_space = 12
-    observation_space = 48
+    observation_space = 51
     state_space = 0
     waypoint_cfg = WAYPOINT_CFG
 
@@ -90,21 +89,20 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     )
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="plane",
+        terrain_type="usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa4.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
-            dynamic_friction=1.0,
-            restitution=0.0,
         ),
         debug_vis=False,
     )
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=10.0, replicate_physics=True
+        num_envs=4096, env_spacing=0.0, replicate_physics=True
     )
 
     # events
@@ -117,20 +115,6 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
         history_length=3,
         update_period=0.005,
         track_air_time=True,
-    )
-
-    # course
-    course = ArticulationCfg(
-        prim_path="/World/envs/env_.*/course",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="C:\isaaclab\IsaacLab\source\isaaclab\ICRA\map_flat\map_flat.usd",
-            activate_contact_sensors=False,
-        ),
-        actuators={},
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(0.0, 0.0, 0.0, 1.0),  # Quaternion (x, y, z, w)# Linear and angular velocity (x, y, z, roll, pitch, yaw)
-        )
     )
 
     # reward scales
@@ -169,16 +153,29 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     #        debug_vis=False,
     #    )
 
+    # terrain = TerrainImporterCfg(
+    #    prim_path="/World/ground",
+    #    terrain_type="plane",
+    #    collision_group=-1,
+    #    physics_material=sim_utils.RigidBodyMaterialCfg(
+    #        friction_combine_mode="multiply",
+    #        restitution_combine_mode="multiply",
+    #        static_friction=1.0,
+    #        dynamic_friction=1.0,
+    #        restitution=0.0,
+    #    ),
+    #    debug_vis=False,
+    # )
+
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="plane",
+        terrain_type="usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa4.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
-            dynamic_friction=1.0,
-            restitution=0.0,
         ),
         debug_vis=False,
     )
@@ -191,21 +188,7 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
         pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),  # type: ignore
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
-    )
 
-    # course
-    course = ArticulationCfg(
-        prim_path="/World/envs/env_.*/course",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\map_flat\map_flat.usd",
-            activate_contact_sensors=False,
-        ),
-        actuators={},
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(0.0, 0.0, 0.0, 1.0),  # Quaternion (x, y, z, w)# Linear and angular velocity (x, y, z, roll, pitch, yaw)
-        )
-        
     )
 
     # reward scales (override from flat config)
@@ -257,8 +240,10 @@ class AnymalCEnv(DirectRLEnv):
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*FOOT")
+        # self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*THIGH")
+        # self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
+
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*THIGH")
-        self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
 
         # los de los conos
         self.env_spacing = self.scene.cfg.env_spacing
@@ -289,7 +274,7 @@ class AnymalCEnv(DirectRLEnv):
 
         # Add persistent tracking for base contacts to avoid false positives
         self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._base_contact_threshold = 3  # Number of consecutive frames to confirm base contact
+        self._base_contact_threshold = 300  # Number of consecutive frames to confirm base contact
         
         # Add termination reason tracking
         self._termination_reason = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
@@ -297,7 +282,6 @@ class AnymalCEnv(DirectRLEnv):
 
     def _setup_scene(self):
         # Set up the scene
-        self._course = Articulation(self.cfg.course)
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
