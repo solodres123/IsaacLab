@@ -90,7 +90,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa4.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa6.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -170,7 +170,7 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa4.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa6.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -503,7 +503,13 @@ class AnymalCEnv(DirectRLEnv):
         super()._reset_idx(env_ids)  # type: ignore
 
         num_reset = len(env_ids)
-        
+
+
+        # Set env origins manually to (5, 5, 0)
+        self._terrain.env_origins[env_ids, 0] = 6.4
+        self._terrain.env_origins[env_ids, 1] = 2.7
+        self._terrain.env_origins[env_ids, 2] = 1.0
+
         # Always reset episode length buffer for reset environments
         self.episode_length_buf[env_ids] = 0
         
