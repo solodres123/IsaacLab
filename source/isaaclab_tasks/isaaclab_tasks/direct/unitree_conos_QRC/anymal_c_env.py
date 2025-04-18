@@ -237,6 +237,7 @@ class AnymalCEnv(DirectRLEnv):
                 "undesired_contacts",
                 "flat_orientation_l2",
                 "base_contact_penalty",  # Add this if it's not already there
+                "thigh_contact_penalty",  # Add this new key
                 "fall_penalty",  # Añadir penalización por caída
             ]
         }
@@ -247,6 +248,15 @@ class AnymalCEnv(DirectRLEnv):
         # self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
 
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*_thigh")
+        
+        # Add counter for thigh contacts
+        self._thigh_ids, _ = self._contact_sensor.find_bodies(".*_thigh")
+        self._thigh_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._thigh_contact_threshold = 10  # Reset after 10 consecutive frames
+
+        # Add counter for base contacts - similar to thigh contacts
+        self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._base_contact_threshold = 10  # Reset after 10 consecutive frames with base contact
 
         # los de los conos
         self.env_spacing = self.scene.cfg.env_spacing
@@ -290,6 +300,9 @@ class AnymalCEnv(DirectRLEnv):
         # Agregar castigo por caída y umbral de altura
         self.min_height_threshold = -1.0  # Umbral mínimo de altura
         self.fall_penalty_weight = -10  # Igual que el de contacto de base
+
+        # Add thigh contact penalty weight parameter
+        self.thigh_contact_penalty_weight = -5  # Same as base contact penalty weight
 
     def _setup_scene(self):
         # Set up the scene
@@ -439,10 +452,12 @@ class AnymalCEnv(DirectRLEnv):
         )[0]
         
         base_contact_penalty = torch.sum(base_contact_forces > 0.1, dim=1)  # Increased threshold from 1.0 to 1.5
-        
-        # Añade esto después de calcular base_contact_penalty en _get_rewards
-        if torch.any(base_contact_penalty > 0):
-            print(f"Base contact detected! Max force: {torch.max(base_contact_forces).item()}")
+
+        # Calculate thigh contact penalty (new code)
+        thigh_contact_forces = torch.max(
+            torch.norm(net_contact_forces[:, :, self._thigh_ids], dim=-1), dim=1  # type: ignore
+        )[0]
+        thigh_contact_penalty = torch.sum(thigh_contact_forces > 0.1, dim=1)
 
         # flat orientation
         flat_orientation = torch.sum(
@@ -477,6 +492,7 @@ class AnymalCEnv(DirectRLEnv):
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
             "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
+            "thigh_contact_penalty": thigh_contact_penalty * self.thigh_contact_penalty_weight,  # Add this line
             "fall_penalty": fall_penalty * self.fall_penalty_weight,  # Añadir castigo por caída
         }
         
@@ -490,32 +506,50 @@ class AnymalCEnv(DirectRLEnv):
         # Track time outs
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         
-        # Detect if robot's base touches the ground - sin umbral de fuerza ni contador de frames
+        # Detect if robot's base touches the ground
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        base_contact = torch.any(
+        base_contact_current = torch.any(
             torch.max(
                 torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1
-            )[0] > 0.0,  # Cualquier fuerza mayor a 0 se considera contacto
+            )[0] > 0.0,
             dim=1,
         )
         
-        # Eliminar el código del contador de frames
-        # self._base_contact_counter[current_base_contact] += 1
-        # self._base_contact_counter[~current_base_contact] = 0
-        # base_contact = self._base_contact_counter >= self._base_contact_threshold
+        # Update counter for base contacts
+        self._base_contact_counter[base_contact_current] += 1
+        self._base_contact_counter[~base_contact_current] = 0
+        
+        # Check if base contact threshold reached
+        base_contact_persistent = self._base_contact_counter >= self._base_contact_threshold
+        
+        # Detect if any thigh touches the ground
+        thigh_contact_current = torch.any(
+            torch.max(
+                torch.norm(net_contact_forces[:, :, self._thigh_ids], dim=-1), dim=1
+            )[0] > 0.0,
+            dim=1,
+        )
+        
+        # Update counter for thigh contacts
+        self._thigh_contact_counter[thigh_contact_current] += 1
+        self._thigh_contact_counter[~thigh_contact_current] = 0
+        
+        # Check if thigh contact threshold reached
+        thigh_contact_persistent = self._thigh_contact_counter >= self._thigh_contact_threshold
         
         # Detect falls below minimum height
         below_height_limit = self._robot.data.root_pos_w[:, 2] < self.min_height_threshold
         
         # Set termination reasons
         self._termination_reason[:] = 0
-        self._termination_reason[below_height_limit] = 4  # Nueva razón: caída por debajo de la altura
-        self._termination_reason[base_contact & ~below_height_limit] = 1
-        self._termination_reason[time_out & ~base_contact & ~below_height_limit] = 2
-        self._termination_reason[self.task_completed & ~base_contact & ~time_out & ~below_height_limit] = 3
+        self._termination_reason[below_height_limit] = 4  # Fall below height
+        self._termination_reason[base_contact_persistent & ~below_height_limit] = 1  # Base contact
+        self._termination_reason[thigh_contact_persistent & ~base_contact_persistent & ~below_height_limit] = 5  # Thigh contact
+        self._termination_reason[time_out & ~base_contact_persistent & ~thigh_contact_persistent & ~below_height_limit] = 2  # Timeout
+        self._termination_reason[self.task_completed & ~base_contact_persistent & ~thigh_contact_persistent & ~time_out & ~below_height_limit] = 3  # Task complete
         
         # Return combined termination conditions and task completion
-        return base_contact | time_out | below_height_limit, self.task_completed
+        return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent, self.task_completed
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -663,38 +697,17 @@ class AnymalCEnv(DirectRLEnv):
         self.extras["log"].update(extras)
         extras = dict()
         
-        # Track termination reasons more clearly
+        # Track termination reasons more clearly - Agregar registro de caídas y contacto de muslos
         base_contact_count = torch.sum(self._termination_reason[env_ids] == 1).item()
         timeout_count = torch.sum(self._termination_reason[env_ids] == 2).item()
         task_complete_count = torch.sum(self._termination_reason[env_ids] == 3).item()
+        fall_count = torch.sum(self._termination_reason[env_ids] == 4).item()
+        thigh_contact_count = torch.sum(self._termination_reason[env_ids] == 5).item()  # Add thigh contact count
         
         extras["Episode_Termination/base_contact"] = base_contact_count
         extras["Episode_Termination/time_out"] = timeout_count
         extras["Episode_Termination/task_completed"] = task_complete_count
-        
-        self.extras["log"].update(extras)
-        
-        # Preparar extras para logging
-        extras = dict()
-        for key in self._episode_sums.keys():
-            episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
-            extras["Episode_Reward/" + key] = (
-                episodic_sum_avg / self.max_episode_length_s
-            )
-            self._episode_sums[key][env_ids] = 0.0
-        self.extras["log"] = dict()
-        self.extras["log"].update(extras)
-        extras = dict()
-        
-        # Track termination reasons more clearly - Agregar registro de caídas
-        base_contact_count = torch.sum(self._termination_reason[env_ids] == 1).item()
-        timeout_count = torch.sum(self._termination_reason[env_ids] == 2).item()
-        task_complete_count = torch.sum(self._termination_reason[env_ids] == 3).item()
-        fall_count = torch.sum(self._termination_reason[env_ids] == 4).item()  # Contar caídas
-        
-        extras["Episode_Termination/base_contact"] = base_contact_count
-        extras["Episode_Termination/time_out"] = timeout_count
-        extras["Episode_Termination/task_completed"] = task_complete_count
-        extras["Episode_Termination/fall_below_height"] = fall_count  # Registrar caídas
+        extras["Episode_Termination/fall_below_height"] = fall_count
+        extras["Episode_Termination/thigh_contact"] = thigh_contact_count  # Log thigh contact terminations
         
         self.extras["log"].update(extras)
