@@ -69,7 +69,7 @@ class EventCfg:
 @configclass
 class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 20.0
+    episode_length_s = 200.0
     decimation = 4
     action_scale = 0.5
     action_space = 12
@@ -237,6 +237,7 @@ class AnymalCEnv(DirectRLEnv):
                 "undesired_contacts",
                 "flat_orientation_l2",
                 "base_contact_penalty",  # Add this if it's not already there
+                "fall_penalty",  # Añadir penalización por caída
             ]
         }
         # Get specific body indices
@@ -255,7 +256,7 @@ class AnymalCEnv(DirectRLEnv):
         self.task_completed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.bool
         )
-        self._num_goals = 10
+        self._num_goals = 29
         self._target_positions = torch.zeros(
             (self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32
         )
@@ -275,12 +276,20 @@ class AnymalCEnv(DirectRLEnv):
         )
 
         # Add persistent tracking for base contacts to avoid false positives
-        self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._base_contact_threshold = 300  # Number of consecutive frames to confirm base contact
+        # self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        # self._base_contact_threshold = 3  # Number of consecutive frames to confirm base contact
         
         # Add termination reason tracking
         self._termination_reason = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
         # 0: not terminated, 1: base contact, 2: timeout, 3: task completed
+
+        # Add termination reason tracking - Actualizar para incluir caída
+        self._termination_reason = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        # 0: not terminated, 1: base contact, 2: timeout, 3: task completed, 4: fall below height
+        
+        # Agregar castigo por caída y umbral de altura
+        self.min_height_threshold = -1.0  # Umbral mínimo de altura
+        self.fall_penalty_weight = -10  # Igual que el de contacto de base
 
     def _setup_scene(self):
         # Set up the scene
@@ -429,13 +438,21 @@ class AnymalCEnv(DirectRLEnv):
             torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
         )[0]
         
-        base_contact_penalty = torch.sum(base_contact_forces > 1.5, dim=1)  # Increased threshold from 1.0 to 1.5
- 
+        base_contact_penalty = torch.sum(base_contact_forces > 0.1, dim=1)  # Increased threshold from 1.0 to 1.5
+        
+        # Añade esto después de calcular base_contact_penalty en _get_rewards
+        if torch.any(base_contact_penalty > 0):
+            print(f"Base contact detected! Max force: {torch.max(base_contact_forces).item()}")
+
         # flat orientation
         flat_orientation = torch.sum(
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
         )
 
+        # Detectar caída por debajo de la altura mínima
+        below_height_limit = self._robot.data.root_pos_w[:, 2] < self.min_height_threshold
+        fall_penalty = below_height_limit.to(torch.float)  # Convert boolean to float (0.0 or 1.0)
+        
         rewards = {
             # conos
             "position_progress": position_progress_rew * self.position_progress_weight,
@@ -460,6 +477,7 @@ class AnymalCEnv(DirectRLEnv):
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
             "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
+            "fall_penalty": fall_penalty * self.fall_penalty_weight,  # Añadir castigo por caída
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -472,31 +490,32 @@ class AnymalCEnv(DirectRLEnv):
         # Track time outs
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         
-        # Detect if robot's base touches the ground with persistence check
+        # Detect if robot's base touches the ground - sin umbral de fuerza ni contador de frames
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
-        current_base_contact = torch.any(
+        base_contact = torch.any(
             torch.max(
-                torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1  # type: ignore
-            )[0]
-            > 1.5,  # Increased threshold from 1.0 to 1.5
+                torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1
+            )[0] > 0.0,  # Cualquier fuerza mayor a 0 se considera contacto
             dim=1,
         )
         
-        # Increment counter for environments with base contact
-        self._base_contact_counter[current_base_contact] += 1
-        # Reset counter for environments without base contact
-        self._base_contact_counter[~current_base_contact] = 0
+        # Eliminar el código del contador de frames
+        # self._base_contact_counter[current_base_contact] += 1
+        # self._base_contact_counter[~current_base_contact] = 0
+        # base_contact = self._base_contact_counter >= self._base_contact_threshold
         
-        # Only consider base contact if it persists for multiple frames
-        base_contact = self._base_contact_counter >= self._base_contact_threshold
+        # Detect falls below minimum height
+        below_height_limit = self._robot.data.root_pos_w[:, 2] < self.min_height_threshold
         
         # Set termination reasons
         self._termination_reason[:] = 0
-        self._termination_reason[base_contact] = 1
-        self._termination_reason[time_out & ~base_contact] = 2
-        self._termination_reason[self.task_completed & ~base_contact & ~time_out] = 3
+        self._termination_reason[below_height_limit] = 4  # Nueva razón: caída por debajo de la altura
+        self._termination_reason[base_contact & ~below_height_limit] = 1
+        self._termination_reason[time_out & ~base_contact & ~below_height_limit] = 2
+        self._termination_reason[self.task_completed & ~base_contact & ~time_out & ~below_height_limit] = 3
         
-        return base_contact | time_out, self.task_completed
+        # Return combined termination conditions and task completion
+        return base_contact | time_out | below_height_limit, self.task_completed
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -506,11 +525,10 @@ class AnymalCEnv(DirectRLEnv):
 
         num_reset = len(env_ids)
 
-
-        # Set env origins manually to (5, 5, 0)
-        self._terrain.env_origins[env_ids, 0] = 6.4
-        self._terrain.env_origins[env_ids, 1] = 2.7
-        self._terrain.env_origins[env_ids, 2] = 1.0
+        # Set env origins manually
+        self._terrain.env_origins[env_ids, 0] = 5.5
+        self._terrain.env_origins[env_ids, 1] = 3.0
+        self._terrain.env_origins[env_ids, 2] = 0.5
 
         # Always reset episode length buffer for reset environments
         self.episode_length_buf[env_ids] = 0
@@ -521,9 +539,6 @@ class AnymalCEnv(DirectRLEnv):
             self.episode_length_buf[:] = torch.randint_like(
                 self.episode_length_buf, high=int(self.max_episode_length / 4)
             )
-            
-        # Reset base contact counters
-        self._base_contact_counter[env_ids] = 0
             
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
@@ -536,27 +551,78 @@ class AnymalCEnv(DirectRLEnv):
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
+        
+        # Modificar la orientación para girar 180 grados alrededor del eje Z
+        # El cuaternión para una rotación de 180 grados en Z es [0, 0, 1, 0]
+        # (donde el formato es [qx, qy, qz, qw])
+        default_root_state[:, 3:7] = torch.tensor([0.0, 0, 0.0, 1], device=self.device)
+        
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)  # type: ignore
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)  # type: ignore
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  # type: ignore
         # conos
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
+        self._markers_pos[env_ids, :, 2] = 0.5
 
-        # Define el rango de dispersión en el área (ajústalo según tu escena)
-        x_range = (-4.0, 4.0)
-        y_range = (-4.0, 4.0)
-
-        # Generar posiciones aleatorias en el área definida
-        self._target_positions[env_ids, :, 0] = (
-            torch.rand((num_reset, self._num_goals), device=self.device)
-            * (x_range[1] - x_range[0]) + x_range[0]
-        )
-
-        self._target_positions[env_ids, :, 1] = (
-            torch.rand((num_reset, self._num_goals), device=self.device)
-            * (y_range[1] - y_range[0]) + y_range[0]
-        )
+        self._target_positions[env_ids, 0, 0] = 4.7
+        self._target_positions[env_ids, 0, 1] = 3.0
+        self._target_positions[env_ids, 1, 0] = 2.8
+        self._target_positions[env_ids, 1, 1] = 3.0
+        self._target_positions[env_ids, 2, 0] = 2.9
+        self._target_positions[env_ids, 2, 1] = 4.25
+        self._target_positions[env_ids, 3, 0] = 1.53
+        self._target_positions[env_ids, 3, 1] = 4.25
+        self._target_positions[env_ids, 4, 0] = 0.17
+        self._target_positions[env_ids, 4, 1] = 4.25
+        self._target_positions[env_ids, 5, 0] = 0.17
+        self._target_positions[env_ids, 5, 1] = 3.0
+        self._target_positions[env_ids, 6, 0] = -1.27
+        self._target_positions[env_ids, 6, 1] = 3.0
+        self._target_positions[env_ids, 7, 0] = -2.8
+        self._target_positions[env_ids, 7, 1] = 3.0
+        self._target_positions[env_ids, 8, 0] = -2.8
+        self._target_positions[env_ids, 8, 1] = 4.25
+        self._target_positions[env_ids, 9, 0] = -4.72
+        self._target_positions[env_ids, 9, 1] = 4.25
+        self._target_positions[env_ids, 10, 0] = -5.76
+        self._target_positions[env_ids, 10, 1] = 4.25
+        self._target_positions[env_ids, 11, 0] = -5.76
+        self._target_positions[env_ids, 11, 1] = 3.0
+        self._target_positions[env_ids, 12, 0] = -6.13
+        self._target_positions[env_ids, 12, 1] = 1.78
+        self._target_positions[env_ids, 13, 0] = -6.13
+        self._target_positions[env_ids, 13, 1] = 0.6
+        self._target_positions[env_ids, 14, 0] = -6.13
+        self._target_positions[env_ids, 14, 1] = -0.6
+        self._target_positions[env_ids, 15, 0] = -6.13
+        self._target_positions[env_ids, 15, 1] = -1.9
+        self._target_positions[env_ids, 16, 0] = -5.8
+        self._target_positions[env_ids, 16, 1] = -3.0
+        self._target_positions[env_ids, 17, 0] = -5.8
+        self._target_positions[env_ids, 17, 1] = -4.25
+        self._target_positions[env_ids, 18, 0] = -4.12
+        self._target_positions[env_ids, 18, 1] = -4.25
+        self._target_positions[env_ids, 19, 0] = -2.63
+        self._target_positions[env_ids, 19, 1] = -4.27
+        self._target_positions[env_ids, 20, 0] = -2.63
+        self._target_positions[env_ids, 20, 1] = -3.0
+        self._target_positions[env_ids, 21, 0] = -1.4
+        self._target_positions[env_ids, 21, 1] = -3.0
+        self._target_positions[env_ids, 22, 0] = 0.21
+        self._target_positions[env_ids, 22, 1] = -3.0
+        self._target_positions[env_ids, 23, 0] = 0.21
+        self._target_positions[env_ids, 23, 1] = -4.25
+        self._target_positions[env_ids, 24, 0] = 1.81
+        self._target_positions[env_ids, 24, 1] = -4.25
+        self._target_positions[env_ids, 25, 0] = 3.17
+        self._target_positions[env_ids, 25, 1] = -4.25
+        self._target_positions[env_ids, 26, 0] = 3.17
+        self._target_positions[env_ids, 26, 1] = -3.0
+        self._target_positions[env_ids, 27, 0] = 4.77
+        self._target_positions[env_ids, 27, 1] = -3.0
+        self._target_positions[env_ids, 28, 0] = 6.2
+        self._target_positions[env_ids, 28, 1] = -3.0
 
         # Aplicar el desplazamiento por entorno
         self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
@@ -605,5 +671,30 @@ class AnymalCEnv(DirectRLEnv):
         extras["Episode_Termination/base_contact"] = base_contact_count
         extras["Episode_Termination/time_out"] = timeout_count
         extras["Episode_Termination/task_completed"] = task_complete_count
+        
+        self.extras["log"].update(extras)
+        
+        # Preparar extras para logging
+        extras = dict()
+        for key in self._episode_sums.keys():
+            episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
+            extras["Episode_Reward/" + key] = (
+                episodic_sum_avg / self.max_episode_length_s
+            )
+            self._episode_sums[key][env_ids] = 0.0
+        self.extras["log"] = dict()
+        self.extras["log"].update(extras)
+        extras = dict()
+        
+        # Track termination reasons more clearly - Agregar registro de caídas
+        base_contact_count = torch.sum(self._termination_reason[env_ids] == 1).item()
+        timeout_count = torch.sum(self._termination_reason[env_ids] == 2).item()
+        task_complete_count = torch.sum(self._termination_reason[env_ids] == 3).item()
+        fall_count = torch.sum(self._termination_reason[env_ids] == 4).item()  # Contar caídas
+        
+        extras["Episode_Termination/base_contact"] = base_contact_count
+        extras["Episode_Termination/time_out"] = timeout_count
+        extras["Episode_Termination/task_completed"] = task_complete_count
+        extras["Episode_Termination/fall_below_height"] = fall_count  # Registrar caídas
         
         self.extras["log"].update(extras)
