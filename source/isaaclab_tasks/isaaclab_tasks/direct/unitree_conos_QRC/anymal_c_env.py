@@ -92,7 +92,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa6.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa15.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -172,7 +172,7 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa6.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapa15.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -562,7 +562,7 @@ class AnymalCEnv(DirectRLEnv):
         # Set env origins manually
         self._terrain.env_origins[env_ids, 0] = 5.5
         self._terrain.env_origins[env_ids, 1] = 3.0
-        self._terrain.env_origins[env_ids, 2] = 0.5
+        self._terrain.env_origins[env_ids, 2] = 0.2
 
         # Always reset episode length buffer for reset environments
         self.episode_length_buf[env_ids] = 0
@@ -584,16 +584,30 @@ class AnymalCEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
+        
+        # Añadir variación aleatoria a la posición (±0.1m en X e Y)
+        position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.5
+        default_root_state[:, 0] += position_variation[:, 0]  # Variación en X
+        
+        # Añadir el origen del entorno
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
         
-        # Modificar la orientación para girar 180 grados alrededor del eje Z
-        # El cuaternión para una rotación de 180 grados en Z es [0, 0, 1, 0]
-        # (donde el formato es [qx, qy, qz, qw])
-        default_root_state[:, 3:7] = torch.tensor([0.0, 0, 0.0, 1], device=self.device)
+        # Generar una rotación aleatoria alrededor del eje Z (ángulo completo aleatorio)
+        random_yaw = torch.rand((len(env_ids),), device=self.device) * 2 * 3.14159  # Ángulo aleatorio entre 0 y 2π
+        
+        # Convertir el ángulo de yaw a cuaternión (rotación alrededor del eje Z)
+        qx = torch.sin(random_yaw * 0.5)
+        qy = torch.zeros_like(random_yaw)
+        qz = torch.zeros_like(random_yaw)
+        qw = torch.cos(random_yaw * 0.5)
+        
+        # Asignar el cuaternión al estado raíz
+        default_root_state[:, 3:7] = torch.stack([qx, qy, qz, qw], dim=1)
         
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)  # type: ignore
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)  # type: ignore
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)  # type: ignore
+
         # conos
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
