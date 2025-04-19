@@ -104,6 +104,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     thigh_contact_penalty_reward_scale = -0.0  # Cambiado de -5 a 0
     fall_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
     target_timeout_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
+    tipped_penalty_reward_scale = -10.0  # Añadir esta línea
 
 
 @configclass
@@ -153,7 +154,7 @@ class AnymalCEnv(DirectRLEnv):
             for key in ["position_progress", "target_heading", "goal_reached",
                         "dof_torques_l2", "dof_acc_l2", "action_rate_l2", "feet_air_time",
                         "undesired_contacts", "flat_orientation_l2", "base_contact_penalty",
-                        "thigh_contact_penalty", "fall_penalty", "target_timeout_penalty",]
+                        "thigh_contact_penalty", "fall_penalty", "target_timeout_penalty", "tipped_penalty"]
         }
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
@@ -186,6 +187,23 @@ class AnymalCEnv(DirectRLEnv):
         self.min_height_threshold = -1.0  # Umbral mínimo de altura
         self._target_timeout = 6.0  # Timeout de 6 segundos para alcanzar el siguiente punto
 
+        # Añadir un nuevo contador para tumbados y umbral de inclinación
+        self._tipped_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._tipped_threshold = 10  # Reset después de 10 frames consecutivos tumbado
+        self._max_tilt_rad = torch.pi / 2.0  # 90 grados en radianes
+
+        # Añadir nuevo valor de castigo
+        self.tipped_penalty_weight = -10.0  # Mismo peso que fall_penalty
+
+        # Ampliar la lista de razones de terminación 
+        # 0: not terminated, 1: base contact, 2: timeout episode, 3: task completed, 
+        # 4: fall below height, 5: thigh contact, 6: target timeout, 7: tipped over
+
+        # Añadir nueva clave para el episodio sum
+        self._episode_sums["tipped_penalty"] = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
+
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
@@ -215,11 +233,23 @@ class AnymalCEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
 
-        # conos
+        # Guardar el error de posición ANTERIOR antes de actualizarlo
+        old_position_error = None
+        if hasattr(self, '_position_error'):
+            old_position_error = self._position_error.clone()
+
+        # conos - calcular el NUEVO error de posición
         current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]  # type: ignore
         self._position_error_vector = (current_target_positions - self._robot.data.root_pos_w[:, :2])
-        self._previous_position_error = self._position_error.clone()
         self._position_error = torch.norm(self._position_error_vector, dim=-1)
+
+        # Ahora actualizar _previous_position_error con el valor guardado
+        if old_position_error is not None:
+            self._previous_position_error = old_position_error
+        else:
+            # Si es la primera vez, inicializar con el valor actual
+            self._previous_position_error = self._position_error.clone()
+
         heading = self._robot.data.heading_w
         target_heading_w = torch.atan2(
             self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],   # type: ignore
@@ -257,12 +287,29 @@ class AnymalCEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
+        print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
         target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
         self._target_timer[goal_reached] = 0.0
+
+        # Cuando se alcanza un objetivo, actualiza _previous_position_error
+        # para evitar una penalización en el siguiente paso
+        if torch.any(goal_reached):
+            # Obtener el índice del nuevo objetivo
+            new_indices = (self._target_index % self._num_goals)[goal_reached]
+            
+            # Calcular la nueva distancia para los entornos que alcanzaron un objetivo
+            new_targets = self._target_positions[goal_reached, new_indices]
+            new_robot_pos = self._robot.data.root_pos_w[goal_reached, :2]
+            new_error_vector = new_targets - new_robot_pos
+            new_error = torch.norm(new_error_vector, dim=1)
+            
+            # Actualizar _previous_position_error para estos entornos
+            # para que coincida con el nuevo error
+            self._previous_position_error[goal_reached] = new_error
 
         one_hot_encoded = torch.nn.functional.one_hot(self._target_index.long(), num_classes=self._num_goals)
         marker_indices = one_hot_encoded.view(-1).tolist()
@@ -294,6 +341,20 @@ class AnymalCEnv(DirectRLEnv):
         target_timeout_penalty = target_timeout.to(torch.float)
         self._target_timer[goal_reached] = 0.0
 
+        # Obtener la gravedad proyectada en el sistema de referencia del cuerpo
+        projected_gravity_b = self._robot.data.projected_gravity_b
+
+        # Calcular el ángulo de inclinación desde la vertical
+        gravity_norm = torch.norm(projected_gravity_b, dim=1)
+        cos_tilt = -projected_gravity_b[:, 2] / gravity_norm
+
+        # El ángulo en radianes
+        tilt_angle = torch.acos(cos_tilt.clamp(-1.0, 1.0))
+
+        # Detección de robot tumbado (ángulo > 90 grados)
+        is_tipped = tilt_angle > self._max_tilt_rad
+        tipped_penalty = is_tipped.to(torch.float)
+
         rewards = {
             "position_progress": position_progress_rew * self.cfg.position_progress_reward_scale,
             "target_heading": target_heading_rew * self.cfg.heading_progress_reward_scale,
@@ -308,12 +369,16 @@ class AnymalCEnv(DirectRLEnv):
             "thigh_contact_penalty": thigh_contact_penalty * self.cfg.thigh_contact_penalty_reward_scale,
             "fall_penalty": fall_penalty * self.cfg.fall_penalty_reward_scale,
             "target_timeout_penalty": target_timeout_penalty * self.cfg.target_timeout_penalty_reward_scale,
+            "tipped_penalty": tipped_penalty * self.tipped_penalty_weight,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging rewards
         for key, value in rewards.items():
             self._episode_sums[key] += value
         return reward
+
+
+
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
 
@@ -332,15 +397,33 @@ class AnymalCEnv(DirectRLEnv):
         below_height_limit = self._robot.data.root_pos_w[:, 2] < self.min_height_threshold
         target_timeout = self._target_timer > self._target_timeout
 
+        # Obtener la gravedad proyectada en el sistema de referencia del cuerpo
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        gravity_norm = torch.norm(projected_gravity_b, dim=1)
+        cos_tilt = -projected_gravity_b[:, 2] / gravity_norm
+        tilt_angle = torch.acos(cos_tilt.clamp(-1.0, 1.0))
+        
+        # Detección de robot tumbado (ángulo > 90 grados)
+        is_tipped_current = tilt_angle > self._max_tilt_rad
+        
+        # Incrementar el contador para robots tumbados
+        self._tipped_counter[is_tipped_current] += 1
+        self._tipped_counter[~is_tipped_current] = 0
+        
+        # Consideramos tumbado persistente después de varios frames
+        tipped_persistent = self._tipped_counter >= self._tipped_threshold
+
         # Set termination reasons
         self._termination_reason[:] = 0
         self._termination_reason[base_contact_persistent & ~below_height_limit] = 1  # Base contact
-        self._termination_reason[time_out & ~below_height_limit] = 2  # Timeout
-        self._termination_reason[self.task_completed & ~time_out & ~below_height_limit] = 3  # Task complete
+        self._termination_reason[time_out & ~below_height_limit & ~base_contact_persistent] = 2  # Timeout
+        self._termination_reason[self.task_completed & ~time_out & ~below_height_limit & ~base_contact_persistent] = 3  # Task complete
         self._termination_reason[below_height_limit] = 4  # Fall below height
         self._termination_reason[thigh_contact_persistent & ~base_contact_persistent & ~below_height_limit] = 5  # Thigh contact
-        self._termination_reason[target_timeout & ~time_out & ~below_height_limit] = 6  # Target timeout
-        return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent | target_timeout, self.task_completed
+        self._termination_reason[target_timeout & ~time_out & ~below_height_limit & ~base_contact_persistent & ~thigh_contact_persistent] = 6  # Target timeout
+        self._termination_reason[tipped_persistent & ~target_timeout & ~time_out & ~below_height_limit & ~base_contact_persistent & ~thigh_contact_persistent] = 7  # Tipped over
+
+        return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent | target_timeout | tipped_persistent, self.task_completed
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -542,6 +625,7 @@ class AnymalCEnv(DirectRLEnv):
         fall_count = torch.sum(self._termination_reason[env_ids] == 4).item()
         thigh_contact_count = torch.sum(self._termination_reason[env_ids] == 5).item()
         target_timeout_count = torch.sum(self._termination_reason[env_ids] == 6).item()
+        tipped_over_count = torch.sum(self._termination_reason[env_ids] == 7).item()  # Nuevo contador
 
         extras["Episode_Termination/base_contact"] = base_contact_count
         extras["Episode_Termination/time_out"] = timeout_count
@@ -549,5 +633,6 @@ class AnymalCEnv(DirectRLEnv):
         extras["Episode_Termination/fall_below_height"] = fall_count
         extras["Episode_Termination/thigh_contact"] = thigh_contact_count
         extras["Episode_Termination/target_timeout"] = target_timeout_count
+        extras["Episode_Termination/tipped_over"] = tipped_over_count  # Nuevo log
 
         self.extras["log"].update(extras)

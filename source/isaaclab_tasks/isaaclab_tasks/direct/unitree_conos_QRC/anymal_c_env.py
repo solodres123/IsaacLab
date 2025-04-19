@@ -421,6 +421,7 @@ class AnymalCEnv(DirectRLEnv):
         # Conos
 
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
+        print(f"Previous error: {self._previous_position_error[0].item():.10f}, Current error: {self._position_error[0].item():.10f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.10f}")
         target_heading_rew = torch.exp(
             -torch.abs(self.target_heading_error) / self.heading_coefficient
         )
