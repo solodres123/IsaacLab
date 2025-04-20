@@ -97,7 +97,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     feet_air_time_reward_scale = 0.5
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
-    goal_reached_reward_scale = 30.0
+    goal_reached_reward_scale = 100.0
     position_progress_reward_scale = 400.0  # 1.0  # 5000.0
     heading_progress_reward_scale = 1  # 0.05
     base_contact_penalty_reward_scale = -0.0  # Cambiado de -5 a 0
@@ -164,11 +164,11 @@ class AnymalCEnv(DirectRLEnv):
         # Add counter for thigh contacts
         self._thigh_ids, _ = self._contact_sensor.find_bodies(".*_thigh")
         self._thigh_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._thigh_contact_threshold = 10  # Reset after 10 consecutive frames
+        self._thigh_contact_threshold = 15  # Reset after 10 consecutive frames
 
         # Add counter for base contacts - similar to thigh contacts
         self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._base_contact_threshold = 10  # Reset after 10 consecutive frames with base contact
+        self._base_contact_threshold = 15  # Reset after 10 consecutive frames with base contact
 
         # los de los conos
         self._num_goals = 28
@@ -233,23 +233,13 @@ class AnymalCEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
 
-        # Guardar el error de posición ANTERIOR antes de actualizarlo
-        old_position_error = None
-        if hasattr(self, '_position_error'):
-            old_position_error = self._position_error.clone()
-
-        # conos - calcular el NUEVO error de posición
+        # conos
         current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]  # type: ignore
-        self._position_error_vector = (current_target_positions - self._robot.data.root_pos_w[:, :2])
+
+        self._position_error_vector = current_target_positions - self._robot.data.root_pos_w[:, :2]
+        self._previous_position_error = self._position_error.clone()
         self._position_error = torch.norm(self._position_error_vector, dim=-1)
-
-        # Ahora actualizar _previous_position_error con el valor guardado
-        if old_position_error is not None:
-            self._previous_position_error = old_position_error
-        else:
-            # Si es la primera vez, inicializar con el valor actual
-            self._previous_position_error = self._position_error.clone()
-
+    
         heading = self._robot.data.heading_w
         target_heading_w = torch.atan2(
             self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],   # type: ignore
@@ -287,29 +277,13 @@ class AnymalCEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
-        print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
+        #print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
         target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
         self._target_timer[goal_reached] = 0.0
-
-        # Cuando se alcanza un objetivo, actualiza _previous_position_error
-        # para evitar una penalización en el siguiente paso
-        if torch.any(goal_reached):
-            # Obtener el índice del nuevo objetivo
-            new_indices = (self._target_index % self._num_goals)[goal_reached]
-            
-            # Calcular la nueva distancia para los entornos que alcanzaron un objetivo
-            new_targets = self._target_positions[goal_reached, new_indices]
-            new_robot_pos = self._robot.data.root_pos_w[goal_reached, :2]
-            new_error_vector = new_targets - new_robot_pos
-            new_error = torch.norm(new_error_vector, dim=1)
-            
-            # Actualizar _previous_position_error para estos entornos
-            # para que coincida con el nuevo error
-            self._previous_position_error[goal_reached] = new_error
 
         one_hot_encoded = torch.nn.functional.one_hot(self._target_index.long(), num_classes=self._num_goals)
         marker_indices = one_hot_encoded.view(-1).tolist()
@@ -377,9 +351,6 @@ class AnymalCEnv(DirectRLEnv):
             self._episode_sums[key] += value
         return reward
 
-
-
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
 
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
@@ -430,13 +401,6 @@ class AnymalCEnv(DirectRLEnv):
             env_ids = self._robot._ALL_INDICES  # type: ignore
         self._robot.reset(env_ids)  # type: ignore
         super()._reset_idx(env_ids)  # type: ignore
-        self.episode_length_buf[env_ids] = 0
-        # For full reset, spread out to avoid spikes
-        if len(env_ids) == self.num_envs:
-            # Spread out the resets to avoid spikes in training when many environments reset at a similar time
-            self.episode_length_buf[:] = torch.randint_like(
-                self.episode_length_buf, high=int(self.max_episode_length / 4)
-            )
 
         position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.5
         random_yaw = torch.rand((len(env_ids),), device=self.device) * 2 * 3.14159  # Ángulo aleatorio entre 0 y 2π
@@ -465,65 +429,6 @@ class AnymalCEnv(DirectRLEnv):
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, 2] = 0.5
-
-        """self._target_positions[env_ids, 0, 0] = 4.7
-         self._target_positions[env_ids, 0, 1] = 3.0
-         self._target_positions[env_ids, 1, 0] = 2.8
-         self._target_positions[env_ids, 1, 1] = 3.0
-         self._target_positions[env_ids, 2, 0] = 2.9
-         self._target_positions[env_ids, 2, 1] = 4.25
-         self._target_positions[env_ids, 3, 0] = 1.53
-         self._target_positions[env_ids, 3, 1] = 4.25
-         self._target_positions[env_ids, 4, 0] = 0.17
-         self._target_positions[env_ids, 4, 1] = 4.25
-         self._target_positions[env_ids, 5, 0] = 0.17
-         self._target_positions[env_ids, 5, 1] = 3.0
-         self._target_positions[env_ids, 6, 0] = -1.27
-         self._target_positions[env_ids, 6, 1] = 3.0
-         self._target_positions[env_ids, 7, 0] = -2.8
-         self._target_positions[env_ids, 7, 1] = 3.0
-         self._target_positions[env_ids, 8, 0] = -2.8
-         self._target_positions[env_ids, 8, 1] = 4.25
-         self._target_positions[env_ids, 9, 0] = -4.72
-         self._target_positions[env_ids, 9, 1] = 4.25
-         self._target_positions[env_ids, 10, 0] = -5.76
-         self._target_positions[env_ids, 10, 1] = 4.25
-         self._target_positions[env_ids, 11, 0] = -5.76
-         self._target_positions[env_ids, 11, 1] = 3.0
-         self._target_positions[env_ids, 12, 0] = -6.13
-         self._target_positions[env_ids, 12, 1] = 1.78
-         self._target_positions[env_ids, 13, 0] = -6.13
-         self._target_positions[env_ids, 13, 1] = 0.6
-         self._target_positions[env_ids, 14, 0] = -6.13
-         self._target_positions[env_ids, 14, 1] = -0.6
-         self._target_positions[env_ids, 15, 0] = -6.13
-         self._target_positions[env_ids, 15, 1] = -1.9
-         self._target_positions[env_ids, 16, 0] = -5.8
-         self._target_positions[env_ids, 16, 1] = -3.0
-         self._target_positions[env_ids, 17, 0] = -5.8
-         self._target_positions[env_ids, 17, 1] = -4.25
-         self._target_positions[env_ids, 18, 0] = -4.12
-         self._target_positions[env_ids, 18, 1] = -4.25
-         self._target_positions[env_ids, 19, 0] = -2.63
-         self._target_positions[env_ids, 19, 1] = -4.27
-         self._target_positions[env_ids, 20, 0] = -2.63
-         self._target_positions[env_ids, 20, 1] = -3.0
-         self._target_positions[env_ids, 21, 0] = -1.4
-         self._target_positions[env_ids, 21, 1] = -3.0
-         self._target_positions[env_ids, 22, 0] = 0.21
-         self._target_positions[env_ids, 22, 1] = -3.0
-         self._target_positions[env_ids, 23, 0] = 0.21
-         self._target_positions[env_ids, 23, 1] = -4.25
-         self._target_positions[env_ids, 24, 0] = 1.81
-         self._target_positions[env_ids, 24, 1] = -4.25
-         self._target_positions[env_ids, 25, 0] = 3.17
-         self._target_positions[env_ids, 25, 1] = -4.25
-         self._target_positions[env_ids, 26, 0] = 3.17
-         self._target_positions[env_ids, 26, 1] = -3.0
-         self._target_positions[env_ids, 27, 0] = 4.77
-         self._target_positions[env_ids, 27, 1] = -3.0
-         self._target_positions[env_ids, 28, 0] = 6.2
-         self._target_positions[env_ids, 28, 1] = -3.0 """
 
         self._target_positions[env_ids, 0, 0] = 2.8
         self._target_positions[env_ids, 0, 1] = 3.0
@@ -588,19 +493,29 @@ class AnymalCEnv(DirectRLEnv):
         visualize_pos = self._markers_pos.view(-1, 3)
         self.waypoints.visualize(translations=visualize_pos)
 
-        current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]  # type: ignore
-        self._position_error_vector = (current_target_positions[:, :2] - self._robot.data.root_pos_w[:, :2])
-        self._position_error = torch.norm(self._position_error_vector, dim=-1)
-        self._previous_position_error = self._position_error.clone()
+        current_target_positions = self._target_positions[env_ids, self._target_index[env_ids]]
+    
+        if not hasattr(self, '_position_error'):
+            # Si self._position_error no existe todavía (primer reset):
+            self._position_error_vector = (current_target_positions - self._robot.data.root_pos_w[env_ids, :2])
+            self._position_error = torch.norm(self._position_error_vector, dim=-1)
+            self._previous_position_error = self._position_error.clone()
+        else:
+            # Si self._position_error ya existe:
+            # Guarda el error actual para los env_ids
+            current_error = self._position_error[env_ids].clone()
+            
+            # Actualiza para los env_ids específicos
+            self._position_error_vector[env_ids] = current_target_positions - self._robot.data.root_pos_w[env_ids, :2]
+            self._previous_position_error[env_ids] = current_error  # Usar el error actual como anterior
+            self._position_error[env_ids] = torch.norm(self._position_error_vector[env_ids], dim=-1)
 
         heading = self._robot.data.heading_w[:]
         target_heading_w = torch.atan2(
             self._target_positions[:, 0, 1] - self._robot.data.root_pos_w[:, 1],
             self._target_positions[:, 0, 0] - self._robot.data.root_pos_w[:, 0],
         )
-        self._heading_error = torch.atan2(
-            torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
-        )
+        self._heading_error = torch.atan2(torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading))
         self._previous_heading_error = self._heading_error.clone()
 
         # Reiniciar el contador de tiempo para cada objetivo

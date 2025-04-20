@@ -709,9 +709,7 @@ class AnymalCEnv(DirectRLEnv):
         visualize_pos = self._markers_pos.view(-1, 3)
         self.waypoints.visualize(translations=visualize_pos)
 
-        current_target_positions = self._target_positions[
-            self._robot._ALL_INDICES, self._target_index  # type: ignore
-        ]
+        current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index ]
         self._position_error_vector = (
             current_target_positions[:, :2] - self._robot.data.root_pos_w[:, :2]
         )
