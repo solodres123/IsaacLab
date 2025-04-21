@@ -244,13 +244,6 @@ class AnymalCEnv(DirectRLEnv):
         target_heading_w = torch.atan2(
             self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],   # type: ignore
             self._target_positions[self._robot._ALL_INDICES, self._target_index, 0] - self._robot.data.root_link_pos_w[:, 0],)  # type: ignore
-        
-        # Add PI (180 degrees) to flip the direction
-        target_heading_w = target_heading_w + torch.pi
-
-        # Normalize to [-pi, pi]
-        target_heading_w = torch.atan2(torch.sin(target_heading_w), torch.cos(target_heading_w))
-        
         self.target_heading_error = torch.atan2(torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading))
         height_data = None
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
