@@ -71,7 +71,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapaPrueba5.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\circuitoPartes4.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -91,10 +91,10 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     )
 
     # reward scales
-    joint_torque_reward_scale = -2.5e-5
-    joint_accel_reward_scale = -2.5e-7
-    action_rate_reward_scale = -0.01
-    feet_air_time_reward_scale = 0.5
+    joint_torque_reward_scale = -7.5e-3  # -2.5e-5
+    joint_accel_reward_scale = -2.5e-6  # -2.5e-7
+    action_rate_reward_scale = -1  # -0.01
+    feet_air_time_reward_scale = 250  # 0.5
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
     goal_reached_reward_scale = 100.0
@@ -114,7 +114,7 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapaPrueba5.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\circuitoPartes4.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -171,7 +171,7 @@ class AnymalCEnv(DirectRLEnv):
         self._base_contact_threshold = 15  # Reset after 10 consecutive frames with base contact
 
         # los de los conos
-        self._num_goals = 28
+        self._num_goals = 14
         self.env_spacing = self.scene.cfg.env_spacing
         self._goal_reached = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
         self.task_completed = torch.zeros((self.num_envs), device=self.device, dtype=torch.bool)
@@ -283,10 +283,10 @@ class AnymalCEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
-        #print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
-        #target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
+        # print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
+        # target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
         target_heading_rew = torch.cos(self.target_heading_error) + 1  # Normalizado entre 0 y 2
-        #print(f"target_heading_rew: {target_heading_rew[0].item():.4f}, target_heading_error: {self.target_heading_error[0].item():.4f}")
+        # print(f"target_heading_rew: {target_heading_rew[0].item():.4f}, target_heading_error: {self.target_heading_error[0].item():.4f}")
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
@@ -412,8 +412,7 @@ class AnymalCEnv(DirectRLEnv):
 
         position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.5
         random_yaw = torch.rand((len(env_ids),), device=self.device) * 2 * 3.14159  # Ángulo aleatorio entre 0 y 2π
-        #random yaw mock always 90 degrees
-        #random_yaw = torch.full((len(env_ids),), torch.pi, device=self.device)  # 90 degrees in radians
+        
         qw = torch.cos(random_yaw * 0.5) 
         qx = torch.zeros_like(random_yaw)
         qy = torch.zeros_like(random_yaw)
@@ -422,14 +421,35 @@ class AnymalCEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         self._commands[env_ids] = torch.zeros_like(self._commands[env_ids]).uniform_(-1.0, 1.0)
-        self._terrain.env_origins[env_ids, 0] = 5.5
-        self._terrain.env_origins[env_ids, 1] = 3.0
-        self._terrain.env_origins[env_ids, 2] = 0.2
+        
+        # Calculate terrain index based on env_id modulo 6
+        terrain_indices = env_ids % 6
+        
+        # Define different terrain origins for each modulo result
+        terrain_origins = torch.tensor([
+            [3.5, -6.6, 0.2],   # Terrain 0
+            [3.5, -1.8, 0.2],   # Terrain 1
+            [3.5, 3.0, 0.2],    # Terrain 2
+            [-1.3, -6.6, 0.2],  # Terrain 3
+            [-1.3, -1.8, 0.2],  # Terrain 4
+            [-1.3, 3.0, 0.2],   # Terrain 5
+        ], device=self.device)
+        
+        # Set terrain origins based on modulo result
+        for i, env_id in enumerate(env_ids):
+            terrain_idx = terrain_indices[i].item()
+            self._terrain.env_origins[env_id] = terrain_origins[terrain_idx]  # type: ignore
+        
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
-        default_root_state[:, 0] += position_variation[:, 0]  # Variación en X
-        default_root_state[:, :3] += self._terrain.env_origins[env_ids]
+        
+        # Add position variation and set root state
+        for i, env_id in enumerate(env_ids):
+            default_root_state[i, 0] += position_variation[i, 0]  # Variation in X
+            default_root_state[i, :3] += self._terrain.env_origins[env_id]  # Add terrain origin
+            
+        # Set quaternion
         default_root_state[:, 3:7] = torch.stack([qw, qx, qy, qz], dim=1)
 
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)  # type: ignore
@@ -439,65 +459,23 @@ class AnymalCEnv(DirectRLEnv):
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, 2] = 0.5
+        
+        # Define waypoint positions for each terrain
+        waypoint_offsets = {
+            0: self._define_waypoints_terrain_0(),
+            1: self._define_waypoints_terrain_1(),
+            2: self._define_waypoints_terrain_2(),
+            3: self._define_waypoints_terrain_3(),
+            4: self._define_waypoints_terrain_4(),
+            5: self._define_waypoints_terrain_5(),
+        }
+        
+        # Set waypoints based on terrain index
+        for i, env_id in enumerate(env_ids):
+            terrain_idx = terrain_indices[i].item()
+            waypoints = waypoint_offsets[terrain_idx]  # type: ignore
+            self._target_positions[env_id] = waypoints + self._terrain.env_origins[env_id, :2].unsqueeze(0)
 
-        self._target_positions[env_ids, 0, 0] = 2.8
-        self._target_positions[env_ids, 0, 1] = 3.0
-        self._target_positions[env_ids, 1, 0] = 2.9
-        self._target_positions[env_ids, 1, 1] = 4.25
-        self._target_positions[env_ids, 2, 0] = 1.53
-        self._target_positions[env_ids, 2, 1] = 4.25
-        self._target_positions[env_ids, 3, 0] = 0.17
-        self._target_positions[env_ids, 3, 1] = 4.25
-        self._target_positions[env_ids, 4, 0] = 0.17
-        self._target_positions[env_ids, 4, 1] = 3.0
-        self._target_positions[env_ids, 5, 0] = -1.27
-        self._target_positions[env_ids, 5, 1] = 3.0
-        self._target_positions[env_ids, 6, 0] = -2.8
-        self._target_positions[env_ids, 6, 1] = 3.0
-        self._target_positions[env_ids, 7, 0] = -2.8
-        self._target_positions[env_ids, 7, 1] = 4.25
-        self._target_positions[env_ids, 8, 0] = -4.72
-        self._target_positions[env_ids, 8, 1] = 4.25
-        self._target_positions[env_ids, 9, 0] = -5.76
-        self._target_positions[env_ids, 9, 1] = 4.25
-        self._target_positions[env_ids, 10, 0] = -5.76
-        self._target_positions[env_ids, 10, 1] = 3.0
-        self._target_positions[env_ids, 11, 0] = -6.13
-        self._target_positions[env_ids, 11, 1] = 1.78
-        self._target_positions[env_ids, 12, 0] = -6.13
-        self._target_positions[env_ids, 12, 1] = 0.6
-        self._target_positions[env_ids, 13, 0] = -6.13
-        self._target_positions[env_ids, 13, 1] = -0.6
-        self._target_positions[env_ids, 14, 0] = -6.13
-        self._target_positions[env_ids, 14, 1] = -1.9
-        self._target_positions[env_ids, 15, 0] = -5.8
-        self._target_positions[env_ids, 15, 1] = -4.25
-        self._target_positions[env_ids, 16, 0] = -5.8
-        self._target_positions[env_ids, 16, 1] = -4.25
-        self._target_positions[env_ids, 17, 0] = -4.12
-        self._target_positions[env_ids, 17, 1] = -4.25
-        self._target_positions[env_ids, 18, 0] = -2.63
-        self._target_positions[env_ids, 18, 1] = -4.27
-        self._target_positions[env_ids, 19, 0] = -2.63
-        self._target_positions[env_ids, 19, 1] = -3.0
-        self._target_positions[env_ids, 20, 0] = -1.4
-        self._target_positions[env_ids, 20, 1] = -3.0
-        self._target_positions[env_ids, 21, 0] = 0.21
-        self._target_positions[env_ids, 21, 1] = -3.0
-        self._target_positions[env_ids, 22, 0] = 0.21
-        self._target_positions[env_ids, 22, 1] = -4.25
-        self._target_positions[env_ids, 23, 0] = 1.81
-        self._target_positions[env_ids, 23, 1] = -4.25
-        self._target_positions[env_ids, 24, 0] = 3.17
-        self._target_positions[env_ids, 24, 1] = -4.25
-        self._target_positions[env_ids, 25, 0] = 3.17
-        self._target_positions[env_ids, 25, 1] = -3.0
-        self._target_positions[env_ids, 26, 0] = 4.77
-        self._target_positions[env_ids, 26, 1] = -3.0
-        self._target_positions[env_ids, 27, 0] = 6.2
-        self._target_positions[env_ids, 27, 1] = -3.0
-
-        self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
         self._target_index[env_ids] = 0
         self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]
         visualize_pos = self._markers_pos.view(-1, 3)
@@ -565,3 +543,123 @@ class AnymalCEnv(DirectRLEnv):
         extras["Episode_Termination/tipped_over"] = tipped_over_count  # Nuevo log
 
         self.extras["log"].update(extras)
+
+    def _define_waypoints_terrain_0(self):
+        # Origin for terrain 0: [3.5, -6.6]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [1.8, -6.6] - [3.5, -6.6]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [0.7, -6.6] - [3.5, -6.6]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [0.7, -5.4] - [3.5, -6.6]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [1.8, -5.4] - [3.5, -6.6]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [3.0, -5.4] - [3.5, -6.6]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [4.2, -5.4] - [3.5, -6.6]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [4.2, -4.2] - [3.5, -6.6]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [4.2, -3.1] - [3.5, -6.6]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [3.0, -3.1] - [3.5, -6.6]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [3.0, -4.2] - [3.5, -6.6]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [1.8, -4.2] - [3.5, -6.6]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [1.8, -3.1] - [3.5, -6.6]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [0.7, -3.1] - [3.5, -6.6]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [0.7, -4.2] - [3.5, -6.6]
+        return waypoints
+
+    def _define_waypoints_terrain_1(self):
+        # Origin for terrain 1: [3.5, -1.8]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [1.8, -1.8] - [3.5, -1.8]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [0.7, -1.8] - [3.5, -1.8]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [0.7, -0.6] - [3.5, -1.8]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [1.8, -0.6] - [3.5, -1.8]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [3.0, -0.6] - [3.5, -1.8]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [4.2, -0.6] - [3.5, -1.8]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [4.2, 0.6] - [3.5, -1.8]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [4.2, 1.7] - [3.5, -1.8]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [3.0, 1.7] - [3.5, -1.8]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [3.0, 0.6] - [3.5, -1.8]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [1.8, 0.6] - [3.5, -1.8]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [1.8, 1.7] - [3.5, -1.8]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [0.7, 1.7] - [3.5, -1.8]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [0.7, 0.6] - [3.5, -1.8]
+        return waypoints
+
+    def _define_waypoints_terrain_2(self):
+        # Origin for terrain 2: [3.5, 3.0]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [1.8, 3.0] - [3.5, 3.0]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [0.7, 3.0] - [3.5, 3.0]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [0.7, 4.2] - [3.5, 3.0]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [1.8, 4.2] - [3.5, 3.0]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [3.0, 4.2] - [3.5, 3.0]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [4.2, 4.2] - [3.5, 3.0]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [4.2, 5.4] - [3.5, 3.0]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [4.2, 6.5] - [3.5, 3.0]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [3.0, 6.5] - [3.5, 3.0]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [3.0, 5.4] - [3.5, 3.0]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [1.8, 5.4] - [3.5, 3.0]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [1.8, 6.5] - [3.5, 3.0]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [0.7, 6.5] - [3.5, 3.0]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [0.7, 5.4] - [3.5, 3.0]
+        return waypoints
+
+    def _define_waypoints_terrain_3(self):
+        # Origin for terrain 3: [-1.3, -6.6]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [-3.0, -6.6] - [-1.3, -6.6]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [-4.1, -6.6] - [-1.3, -6.6]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [-4.1, -5.4] - [-1.3, -6.6]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [-3.0, -5.4] - [-1.3, -6.6]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [-1.8, -5.4] - [-1.3, -6.6]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [-0.6, -5.4] - [-1.3, -6.6]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [-0.6, -4.2] - [-1.3, -6.6]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [-0.6, -3.1] - [-1.3, -6.6]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [-1.8, -3.1] - [-1.3, -6.6]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [-1.8, -4.2] - [-1.3, -6.6]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [-3.0, -4.2] - [-1.3, -6.6]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [-3.0, -3.1] - [-1.3, -6.6]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [-4.1, -3.1] - [-1.3, -6.6]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [-4.1, -4.2] - [-1.3, -6.6]
+        return waypoints
+
+    def _define_waypoints_terrain_4(self):
+        # Origin for terrain 4: [-1.3, -1.8]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [-3.0, -1.8] - [-1.3, -1.8]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [-4.1, -1.8] - [-1.3, -1.8]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [-4.1, -0.6] - [-1.3, -1.8]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [-3.0, -0.6] - [-1.3, -1.8]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [-1.8, -0.6] - [-1.3, -1.8]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [-0.6, -0.6] - [-1.3, -1.8]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [-0.6, 0.6] - [-1.3, -1.8]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [-0.6, 1.7] - [-1.3, -1.8]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [-1.8, 1.7] - [-1.3, -1.8]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [-1.8, 0.6] - [-1.3, -1.8]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [-3.0, 0.6] - [-1.3, -1.8]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [-3.0, 1.7] - [-1.3, -1.8]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [-4.1, 1.7] - [-1.3, -1.8]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [-4.1, 0.6] - [-1.3, -1.8]
+        return waypoints
+
+    def _define_waypoints_terrain_5(self):
+        # Origin for terrain 5: [-1.3, 3.0]
+        # Waypoints (with origin subtraction pre-calculated)
+        waypoints = torch.zeros((self._num_goals, 2), device=self.device)
+        waypoints[0] = torch.tensor([-1.7, 0.0], device=self.device)   # [-3.0, 3.0] - [-1.3, 3.0]
+        waypoints[1] = torch.tensor([-2.8, 0.0], device=self.device)   # [-4.1, 3.0] - [-1.3, 3.0]
+        waypoints[2] = torch.tensor([-2.8, 1.2], device=self.device)   # [-4.1, 4.2] - [-1.3, 3.0]
+        waypoints[3] = torch.tensor([-1.7, 1.2], device=self.device)   # [-3.0, 4.2] - [-1.3, 3.0]
+        waypoints[4] = torch.tensor([-0.5, 1.2], device=self.device)   # [-1.8, 4.2] - [-1.3, 3.0]
+        waypoints[5] = torch.tensor([0.7, 1.2], device=self.device)    # [-0.6, 4.2] - [-1.3, 3.0]
+        waypoints[6] = torch.tensor([0.7, 2.4], device=self.device)    # [-0.6, 5.4] - [-1.3, 3.0]
+        waypoints[7] = torch.tensor([0.7, 3.5], device=self.device)    # [-0.6, 6.5] - [-1.3, 3.0]
+        waypoints[8] = torch.tensor([-0.5, 3.5], device=self.device)   # [-1.8, 6.5] - [-1.3, 3.0]
+        waypoints[9] = torch.tensor([-0.5, 2.4], device=self.device)   # [-1.8, 5.4] - [-1.3, 3.0]
+        waypoints[10] = torch.tensor([-1.7, 2.4], device=self.device)  # [-3.0, 5.4] - [-1.3, 3.0]
+        waypoints[11] = torch.tensor([-1.7, 3.5], device=self.device)  # [-3.0, 6.5] - [-1.3, 3.0]
+        waypoints[12] = torch.tensor([-2.8, 3.5], device=self.device)  # [-4.1, 6.5] - [-1.3, 3.0]
+        waypoints[13] = torch.tensor([-2.8, 2.4], device=self.device)  # [-4.1, 5.4] - [-1.3, 3.0]
+        return waypoints
