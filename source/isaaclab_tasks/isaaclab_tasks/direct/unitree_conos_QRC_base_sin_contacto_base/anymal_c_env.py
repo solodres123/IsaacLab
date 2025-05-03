@@ -71,7 +71,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\circuitoPartes4.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\MapaCurriculum.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -100,21 +100,23 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     goal_reached_reward_scale = 100.0
     position_progress_reward_scale = 400.0  # 1.0  # 5000.0
     heading_progress_reward_scale = 0.5  # 0.05
-    base_contact_penalty_reward_scale = -0.0  # Cambiado de -5 a 0
-    thigh_contact_penalty_reward_scale = -0.0  # Cambiado de -5 a 0
+    base_contact_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
+    thigh_contact_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
     fall_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
     target_timeout_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
     tipped_penalty_reward_scale = -10.0  # Añadir esta línea
+    calf_contact_penalty_reward_scale = -5.0  # Mismo peso que los otros contactos
 
 
 @configclass
 class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
-    observation_space = 238
+    # observation_space = 238
+    observation_space = 274
     flat_orientation_reward_scale = 0.0
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\circuitoPartes4.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\MapaCurriculum.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -128,6 +130,42 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         attach_yaw_only=True,
         pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),  # type: ignore
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+
+    height_scanner_FR = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/FR_foot",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+
+    height_scanner_FL = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/FL_foot",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+
+    height_scanner_RR = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/RR_foot",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+
+    height_scanner_RL = RayCasterCfg(
+        prim_path="/World/envs/env_.*/Robot/RL_foot",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
@@ -170,6 +208,11 @@ class AnymalCEnv(DirectRLEnv):
         self._base_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
         self._base_contact_threshold = 15  # Reset after 10 consecutive frames with base contact
 
+        # Add counter for calf contacts
+        self._calf_ids, _ = self._contact_sensor.find_bodies(".*_calf")
+        self._calf_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._calf_contact_threshold = 15  # Reset after 3 consecutive frames with calf contact
+
         # los de los conos
         self._num_goals = 14
         self.env_spacing = self.scene.cfg.env_spacing
@@ -182,6 +225,7 @@ class AnymalCEnv(DirectRLEnv):
         self._markers_pos = torch.zeros((self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32)
         self._target_index = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
         self._episode_sums["target_timeout_penalty"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._episode_sums["calf_contact_penalty"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.position_tolerance = 0.15  # 0.15
         self.heading_coefficient = 1.5  # 0.25
         self.min_height_threshold = -1.0  # Umbral mínimo de altura
@@ -197,7 +241,7 @@ class AnymalCEnv(DirectRLEnv):
 
         # Ampliar la lista de razones de terminación 
         # 0: not terminated, 1: base contact, 2: timeout episode, 3: task completed, 
-        # 4: fall below height, 5: thigh contact, 6: target timeout, 7: tipped over
+        # 4: fall below height, 5: thigh contact, 6: target timeout, 7: tipped over, 8: calf contact
 
         # Añadir nueva clave para el episodio sum
         self._episode_sums["tipped_penalty"] = torch.zeros(
@@ -212,6 +256,14 @@ class AnymalCEnv(DirectRLEnv):
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
             self._height_scanner = RayCaster(self.cfg.height_scanner)
             self.scene.sensors["height_scanner"] = self._height_scanner
+            self._height_scanner_FR = RayCaster(self.cfg.height_scanner_FR)
+            self.scene.sensors["height_scanner_FR"] = self._height_scanner_FR
+            self._height_scanner_FL = RayCaster(self.cfg.height_scanner_FL)
+            self.scene.sensors["height_scanner_FL"] = self._height_scanner_FL
+            self._height_scanner_RR = RayCaster(self.cfg.height_scanner_RR)
+            self.scene.sensors["height_scanner_RR"] = self._height_scanner_RR
+            self._height_scanner_RL = RayCaster(self.cfg.height_scanner_RL)
+            self.scene.sensors["height_scanner_RL"] = self._height_scanner_RL
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -258,6 +310,31 @@ class AnymalCEnv(DirectRLEnv):
                 - self._height_scanner.data.ray_hits_w[..., 2]
                 - 0.5
             ).clip(-1.0, 1.0)
+
+            frheight_data = (
+                self._height_scanner_FR.data.pos_w[:, 2].unsqueeze(1)
+                - self._height_scanner_FR.data.ray_hits_w[..., 2]
+                - 0.5
+            ).clip(-1.0, 1.0)
+
+            flheight_data = (
+                self._height_scanner_FL.data.pos_w[:, 2].unsqueeze(1)
+                - self._height_scanner_FL.data.ray_hits_w[..., 2]
+                - 0.5
+            ).clip(-1.0, 1.0)
+
+            rrheight_data = (
+                self._height_scanner_RR.data.pos_w[:, 2].unsqueeze(1)
+                - self._height_scanner_RR.data.ray_hits_w[..., 2]
+                - 0.5
+            ).clip(-1.0, 1.0)
+
+            rlheight_data = (
+                self._height_scanner_RL.data.pos_w[:, 2].unsqueeze(1)
+                - self._height_scanner_RL.data.ray_hits_w[..., 2]
+                - 0.5
+            ).clip(-1.0, 1.0)
+            
         obs = torch.cat(
             [
                 tensor
@@ -272,6 +349,10 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                     self._robot.data.joint_vel,
                     height_data,
+                    frheight_data,
+                    flheight_data,
+                    rrheight_data,
+                    rlheight_data,
                     self._actions,
                 )
                 if tensor is not None
@@ -392,6 +473,16 @@ class AnymalCEnv(DirectRLEnv):
         # Consideramos tumbado persistente después de varios frames
         tipped_persistent = self._tipped_counter >= self._tipped_threshold
 
+        # Detectar contacto actual de pantorrillas
+        calf_contact_current = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._calf_ids], dim=-1), dim=1)[0] > 0.0, dim=1)  # type: ignore
+
+        # Incrementar contador
+        self._calf_contact_counter[calf_contact_current] += 1
+        self._calf_contact_counter[~calf_contact_current] = 0
+
+        # Comprobar si el contacto es persistente
+        calf_contact_persistent = self._calf_contact_counter >= self._calf_contact_threshold
+
         # Set termination reasons
         self._termination_reason[:] = 0
         self._termination_reason[base_contact_persistent & ~below_height_limit] = 1  # Base contact
@@ -401,8 +492,9 @@ class AnymalCEnv(DirectRLEnv):
         self._termination_reason[thigh_contact_persistent & ~base_contact_persistent & ~below_height_limit] = 5  # Thigh contact
         self._termination_reason[target_timeout & ~time_out & ~below_height_limit & ~base_contact_persistent & ~thigh_contact_persistent] = 6  # Target timeout
         self._termination_reason[tipped_persistent & ~target_timeout & ~time_out & ~below_height_limit & ~base_contact_persistent & ~thigh_contact_persistent] = 7  # Tipped over
+        self._termination_reason[calf_contact_persistent & ~base_contact_persistent & ~below_height_limit & ~thigh_contact_persistent] = 8  # Calf contact
 
-        return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent | target_timeout | tipped_persistent, self.task_completed
+        return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent | target_timeout | tipped_persistent | calf_contact_persistent, self.task_completed
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -410,7 +502,7 @@ class AnymalCEnv(DirectRLEnv):
         self._robot.reset(env_ids)  # type: ignore
         super()._reset_idx(env_ids)  # type: ignore
 
-        position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.5
+        position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.2
         random_yaw = torch.rand((len(env_ids),), device=self.device) * 2 * 3.14159  # Ángulo aleatorio entre 0 y 2π
         
         qw = torch.cos(random_yaw * 0.5) 
@@ -457,7 +549,7 @@ class AnymalCEnv(DirectRLEnv):
         
         # Add position variation and set root state
         for i, env_id in enumerate(env_ids):
-            default_root_state[i, 0] += position_variation[i, 0]  # Variation in X
+            default_root_state[i, 0] += position_variation[i, 0] + 0.2 # Variation in X
             default_root_state[i, :3] += self._terrain.env_origins[env_id]  # Add terrain origin
             
         # Set quaternion
@@ -544,6 +636,7 @@ class AnymalCEnv(DirectRLEnv):
         thigh_contact_count = torch.sum(self._termination_reason[env_ids] == 5).item()
         target_timeout_count = torch.sum(self._termination_reason[env_ids] == 6).item()
         tipped_over_count = torch.sum(self._termination_reason[env_ids] == 7).item()  # Nuevo contador
+        calf_contact_count = torch.sum(self._termination_reason[env_ids] == 8).item()
 
         extras["Episode_Termination/base_contact"] = base_contact_count
         extras["Episode_Termination/time_out"] = timeout_count
@@ -552,6 +645,7 @@ class AnymalCEnv(DirectRLEnv):
         extras["Episode_Termination/thigh_contact"] = thigh_contact_count
         extras["Episode_Termination/target_timeout"] = target_timeout_count
         extras["Episode_Termination/tipped_over"] = tipped_over_count  # Nuevo log
+        extras["Episode_Termination/calf_contact"] = calf_contact_count
 
         self.extras["log"].update(extras)
 
