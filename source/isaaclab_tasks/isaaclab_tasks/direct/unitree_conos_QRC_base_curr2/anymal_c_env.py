@@ -48,7 +48,7 @@ class EventCfg:
 
 @configclass
 class AnymalCFlatEnvCfg(DirectRLEnvCfg):
-    episode_length_s = 200.0
+    episode_length_s = 84.0
     decimation = 4
     action_scale = 0.25
     action_space = 12
@@ -71,7 +71,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapaCurriculumAyuda.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\plano.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -80,9 +80,13 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
         ),
         debug_vis=False,
     )
+
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=0.0, replicate_physics=True)
+
     events: EventCfg = EventCfg()
+
     robot: ArticulationCfg = UNITREE_GO2_CFG.replace(prim_path="/World/envs/env_.*/Robot")  # type: ignore
+
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/.*",
         history_length=3,
@@ -91,33 +95,36 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     )
 
     # reward scales
-    joint_torque_reward_scale = -2.5e-4  # -2.5e-5
+    joint_torque_reward_scale = -2.5e-5  # -2.5e-5
     joint_accel_reward_scale = -2.5e-7  # -2.5e-7
     action_rate_reward_scale = -0.01  # -0.01
-    feet_air_time_reward_scale = 0.01  # 0.5
+
+    feet_air_time_reward_scale = 10  # 0.5  #1
+
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
-    goal_reached_reward_scale = 100.0
-    position_progress_reward_scale = 400.0  # 1.0  # 5000.0
-    heading_progress_reward_scale = 0.5  # 0.05
+    goal_reached_reward_scale = 3.0
+    position_progress_reward_scale = 1600  # 1.0  # 5000.0 #200  #800
+
+    heading_progress_reward_scale = 2  # 0.05  #1
+
     base_contact_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
     thigh_contact_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
-    fall_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
-    target_timeout_penalty_reward_scale = -10.0  # Cambiado de -5 a 0
-    tipped_penalty_reward_scale = -10.0  # Añadir esta línea
-    calf_contact_penalty_reward_scale = -0.0  # Mismo peso que los otros contactos
-
+    fall_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
+    target_timeout_penalty_reward_scale = -5.0  # Cambiado de -5 a 0
+    tipped_penalty_reward_scale = -5.0  # Añadir esta línea
+    calf_contact_penalty_reward_scale = -5.0  # Mismo peso que los otros contactos
 
 
 @configclass
 class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     # observation_space = 238
-    observation_space = 274
+    observation_space = 238
     flat_orientation_reward_scale = 0.0
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\mapaCurriculumAyuda.usd",
+        usd_path=r"C:\isaaclab\IsaacLab\source\isaaclab\ICRA\ICRA2024_Quadruped_Competition\urdf\plano.usd",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -135,52 +142,13 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
         mesh_prim_paths=["/World/ground"],
     )
 
-    height_scanner_FR = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot/FR_foot",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
-        debug_vis=False,
-        mesh_prim_paths=["/World/ground"],
-    )
-
-    height_scanner_FL = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot/FL_foot",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
-        debug_vis=False,
-        mesh_prim_paths=["/World/ground"],
-    )
-
-    height_scanner_RR = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot/RR_foot",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
-        debug_vis=False,
-        mesh_prim_paths=["/World/ground"],
-    )
-
-    height_scanner_RL = RayCasterCfg(
-        prim_path="/World/envs/env_.*/Robot/RL_foot",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.1, 0.1]),  # type: ignore
-        debug_vis=False,
-        mesh_prim_paths=["/World/ground"],
-    )
-
 
 class AnymalCEnv(DirectRLEnv):
     cfg: AnymalCFlatEnvCfg | AnymalCRoughEnvCfg
 
-    def __init__(
-        self,
-        cfg: AnymalCFlatEnvCfg | AnymalCRoughEnvCfg,
-        render_mode: str | None = None,
-        **kwargs,
-    ):
+    # Init -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    def __init__(self , cfg: AnymalCFlatEnvCfg | AnymalCRoughEnvCfg , render_mode: str | None = None , **kwargs,):
+
         super().__init__(cfg, render_mode, **kwargs)
 
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device,)
@@ -190,16 +158,29 @@ class AnymalCEnv(DirectRLEnv):
         # Logging
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-            for key in ["position_progress", "target_heading", "goal_reached",
-                        "dof_torques_l2", "dof_acc_l2", "action_rate_l2", "feet_air_time",
-                        "undesired_contacts", "flat_orientation_l2", "base_contact_penalty",
-                        "thigh_contact_penalty", "fall_penalty", "target_timeout_penalty", "tipped_penalty"]
+            for key in [
+                "position_progress",
+                "target_heading",
+                "goal_reached",
+                "dof_torques_l2",
+                "dof_acc_l2",
+                "action_rate_l2",
+                "feet_air_time",
+                "undesired_contacts",
+                "flat_orientation_l2",
+                "base_contact_penalty",
+                "thigh_contact_penalty",
+                "fall_penalty",
+                "target_timeout_penalty",
+                "tipped_penalty"]
         }
+
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*_foot")
-        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*_thigh")
-
+        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*_thigh|.*_calf|.*_base")
+        
+        
         # Add counter for thigh contacts
         self._thigh_ids, _ = self._contact_sensor.find_bodies(".*_thigh")
         self._thigh_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
@@ -212,7 +193,12 @@ class AnymalCEnv(DirectRLEnv):
         # Add counter for calf contacts
         self._calf_ids, _ = self._contact_sensor.find_bodies(".*_calf")
         self._calf_contact_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._calf_contact_threshold = 150  # Reset after 3 consecutive frames with calf contact
+        self._calf_contact_threshold = 15  # Reset after 3 consecutive frames with calf contact
+
+        # Añadir un nuevo contador para tumbados y umbral de inclinación
+        self._tipped_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
+        self._max_tilt_rad = torch.pi / 2.0  # 90 grados en radianes
+        self._tipped_threshold = 10  # Reset después de 10 frames consecutivos tumbado
 
         # los de los conos
         self._num_goals = 14
@@ -225,37 +211,19 @@ class AnymalCEnv(DirectRLEnv):
         self._target_positions = torch.zeros((self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32)
         self._markers_pos = torch.zeros((self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32)
         self._target_index = torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
-        self._episode_sums["target_timeout_penalty"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self._episode_sums["calf_contact_penalty"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.position_tolerance = 0.15  # 0.15
-        self.heading_coefficient = 1.5  # 0.25
+        self.heading_coefficient = 1  # 0.25
         self.min_height_threshold = -1.0  # Umbral mínimo de altura
-        self._target_timeout = 6.0  # Timeout de 6 segundos para alcanzar el siguiente punto
-
-        # Añadir un nuevo contador para tumbados y umbral de inclinación
-        self._tipped_counter = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._tipped_threshold = 10  # Reset después de 10 frames consecutivos tumbado
-        self._max_tilt_rad = torch.pi / 2.0  # 90 grados en radianes
-
-        # Añadir nuevo valor de castigo
-        self.tipped_penalty_weight = -10.0  # Mismo peso que fall_penalty
-
-        # Ampliar la lista de razones de terminación 
-        # 0: not terminated, 1: base contact, 2: timeout episode, 3: task completed, 
-        # 4: fall below height, 5: thigh contact, 6: target timeout, 7: tipped over, 8: calf contact
-
-        # Añadir nueva clave para el episodio sum
-        self._episode_sums["tipped_penalty"] = torch.zeros(
-            self.num_envs, dtype=torch.float, device=self.device
-        )
+        self._target_timeout = 10.0  # Timeout de 6 segundos para alcanzar el siguiente punto
 
         # Añadir contadores para el aprendizaje curricular
         self._circuit_completions = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
         self._circuits_advanced = torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
-        self._max_circuits = 4  # Máximo número de circuitos
+        self._max_circuits = 5  # Máximo número de circuitos
         self._completions_required = 1  # Número de veces que hay que completar cada circuito
-        self._circuit_x_offset = -11.0  # Offset en X para cada avance de circuito
+        self._circuit_x_offset = -0.0  # Offset en X para cada avance de circuito
 
+    # Definicion de la escena -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
@@ -264,14 +232,6 @@ class AnymalCEnv(DirectRLEnv):
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
             self._height_scanner = RayCaster(self.cfg.height_scanner)
             self.scene.sensors["height_scanner"] = self._height_scanner
-            self._height_scanner_FR = RayCaster(self.cfg.height_scanner_FR)
-            self.scene.sensors["height_scanner_FR"] = self._height_scanner_FR
-            self._height_scanner_FL = RayCaster(self.cfg.height_scanner_FL)
-            self.scene.sensors["height_scanner_FL"] = self._height_scanner_FL
-            self._height_scanner_RR = RayCaster(self.cfg.height_scanner_RR)
-            self.scene.sensors["height_scanner_RR"] = self._height_scanner_RR
-            self._height_scanner_RL = RayCaster(self.cfg.height_scanner_RL)
-            self.scene.sensors["height_scanner_RL"] = self._height_scanner_RL
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -279,38 +239,35 @@ class AnymalCEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
         self.waypoints = VisualizationMarkers(self.cfg.waypoint_cfg)
+        self.waypoints.set_visibility(False)
         self.object_state = []
 
+    # Definicion del step ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
         self._actions = actions.clone()
         self._processed_actions = (
             self.cfg.action_scale * self._actions + self._robot.data.default_joint_pos
         )
 
+    # Definicion aplicar acciones -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _apply_action(self):
         self._robot.set_joint_position_target(self._processed_actions)
 
+    # Definicion de observaciones -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
-
-        # conos
         current_target_positions = self._target_positions[self._robot._ALL_INDICES, self._target_index]  # type: ignore
-
         self._position_error_vector = current_target_positions - self._robot.data.root_pos_w[:, :2]
         self._previous_position_error = self._position_error.clone()
         self._position_error = torch.norm(self._position_error_vector, dim=-1)
-    
+
         heading = self._robot.data.heading_w
         target_heading_w = torch.atan2(
-            self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],
-            self._target_positions[self._robot._ALL_INDICES, self._target_index, 0] - self._robot.data.root_link_pos_w[:, 0])
-    
-        # Add PI (180 degrees) to make the robot face away from the target  
-    
-        # Normalize to [-pi, pi]
+            self._target_positions[self._robot._ALL_INDICES, self._target_index, 1] - self._robot.data.root_link_pos_w[:, 1],  # type: ignore
+            self._target_positions[self._robot._ALL_INDICES, self._target_index, 0] - self._robot.data.root_link_pos_w[:, 0])  # type: ignore
         target_heading_w = torch.atan2(torch.sin(target_heading_w), torch.cos(target_heading_w))
-    
         self.target_heading_error = torch.atan2(torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading))
+
         height_data = None
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
             height_data = (
@@ -319,30 +276,6 @@ class AnymalCEnv(DirectRLEnv):
                 - 0.5
             ).clip(-1.0, 1.0)
 
-            frheight_data = (
-                self._height_scanner_FR.data.pos_w[:, 2].unsqueeze(1)
-                - self._height_scanner_FR.data.ray_hits_w[..., 2]
-                - 0.5
-            ).clip(-1.0, 1.0)
-
-            flheight_data = (
-                self._height_scanner_FL.data.pos_w[:, 2].unsqueeze(1)
-                - self._height_scanner_FL.data.ray_hits_w[..., 2]
-                - 0.5
-            ).clip(-1.0, 1.0)
-
-            rrheight_data = (
-                self._height_scanner_RR.data.pos_w[:, 2].unsqueeze(1)
-                - self._height_scanner_RR.data.ray_hits_w[..., 2]
-                - 0.5
-            ).clip(-1.0, 1.0)
-
-            rlheight_data = (
-                self._height_scanner_RL.data.pos_w[:, 2].unsqueeze(1)
-                - self._height_scanner_RL.data.ray_hits_w[..., 2]
-                - 0.5
-            ).clip(-1.0, 1.0)
-            
         obs = torch.cat(
             [
                 tensor
@@ -357,10 +290,6 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                     self._robot.data.joint_vel,
                     height_data,
-                    frheight_data,
-                    flheight_data,
-                    rrheight_data,
-                    rlheight_data,
                     self._actions,
                 )
                 if tensor is not None
@@ -370,33 +299,31 @@ class AnymalCEnv(DirectRLEnv):
         observations = {"policy": obs}
         return observations
 
+    # Definicion de rewards -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
-        # print(f"Previous error: {self._previous_position_error[0].item():.4f}, Current error: {self._position_error[0].item():.4f}, Diff: {(self._previous_position_error[0] - self._position_error[0]).item():.4f}")
-        # target_heading_rew = torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient)
         target_heading_rew = torch.cos(self.target_heading_error) + 1  # Normalizado entre 0 y 2
-        # print(f"target_heading_rew: {target_heading_rew[0].item():.4f}, target_heading_error: {self.target_heading_error[0].item():.4f}")
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
 
         # Detectar cuando un robot completa todo el circuito
         circuit_completed = self._target_index > (self._num_goals - 1)
-        
+
         # Reiniciar el índice de waypoint al completar el circuito
         self._target_index = self._target_index % self._num_goals
-        
+
         # Para los robots que acaban de completar un circuito
         self._circuit_completions[circuit_completed] += 1
-        
+
         # Verificar qué robots han completado suficientes veces el circuito para avanzar
         ready_to_advance = (self._circuit_completions >= self._completions_required) & (self._circuits_advanced < self._max_circuits)
-        
+
         # Actualizar el contador de circuitos avanzados para los robots listos
         self._circuits_advanced[ready_to_advance] += 1
-        
+
         # Resetear el contador de completaciones para los que avanzan
         self._circuit_completions[ready_to_advance] = 0
-        
+
         # Establecer la bandera de tarea completada para los que acaban un circuito
         self.task_completed = circuit_completed
 
@@ -411,7 +338,7 @@ class AnymalCEnv(DirectRLEnv):
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]  # type: ignore
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]  # type: ignore
-        air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1) * (torch.norm(self._commands[:, :2], dim=1) > 0.1)
+        air_time = torch.sum((last_air_time - 0.25) * first_contact, dim=1) * (torch.norm(self._commands[:, :2], dim=1) > 0.1)
 
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
         is_contact = (torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1,)[0] > 1.0)  # type: ignore
@@ -448,20 +375,22 @@ class AnymalCEnv(DirectRLEnv):
         tipped_penalty = is_tipped.to(torch.float)
 
         rewards = {
-            "position_progress": position_progress_rew * self.cfg.position_progress_reward_scale,
-            "target_heading": target_heading_rew * self.cfg.heading_progress_reward_scale,
+            "position_progress": position_progress_rew * self.cfg.position_progress_reward_scale * self.step_dt,
+            "target_heading": target_heading_rew * self.cfg.heading_progress_reward_scale * self.step_dt,
             "goal_reached": goal_reached * self.cfg.goal_reached_reward_scale,
+
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
-            "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale * self.step_dt,
+            "undesired_contacts": contacts * self.cfg.undesired_contact_reward_scale,
             "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
+
             "base_contact_penalty": base_contact_penalty * self.cfg.base_contact_penalty_reward_scale,
             "thigh_contact_penalty": thigh_contact_penalty * self.cfg.thigh_contact_penalty_reward_scale,
             "fall_penalty": fall_penalty * self.cfg.fall_penalty_reward_scale,
             "target_timeout_penalty": target_timeout_penalty * self.cfg.target_timeout_penalty_reward_scale,
-            "tipped_penalty": tipped_penalty * self.tipped_penalty_weight,
+            "tipped_penalty": tipped_penalty * self.cfg.tipped_penalty_reward_scale,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging rewards
@@ -469,48 +398,36 @@ class AnymalCEnv(DirectRLEnv):
             self._episode_sums[key] += value
         return reward
 
+    # Definicion de terminaciones -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+
+        projected_gravity_b = self._robot.data.projected_gravity_b
+        gravity_norm = torch.norm(projected_gravity_b, dim=1)
+        cos_tilt = -projected_gravity_b[:, 2] / gravity_norm
+        tilt_angle = torch.acos(cos_tilt.clamp(-1.0, 1.0))
 
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
         base_contact_current = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 0.0, dim=1,)  # type: ignore
         thigh_contact_current = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._thigh_ids], dim=-1), dim=1)[0] > 0.0, dim=1,)  # type: ignore
+        calf_contact_current = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._calf_ids], dim=-1), dim=1)[0] > 0.0, dim=1)  # type: ignore
+        is_tipped_current = tilt_angle > self._max_tilt_rad
 
         self._base_contact_counter[base_contact_current] += 1
         self._base_contact_counter[~base_contact_current] = 0
         self._thigh_contact_counter[thigh_contact_current] += 1
         self._thigh_contact_counter[~thigh_contact_current] = 0
+        self._calf_contact_counter[calf_contact_current] += 1
+        self._calf_contact_counter[~calf_contact_current] = 0
+        self._tipped_counter[is_tipped_current] += 1
+        self._tipped_counter[~is_tipped_current] = 0
 
         base_contact_persistent = self._base_contact_counter >= self._base_contact_threshold
         thigh_contact_persistent = self._thigh_contact_counter >= self._thigh_contact_threshold
+        calf_contact_persistent = self._calf_contact_counter >= self._calf_contact_threshold
+        tipped_persistent = self._tipped_counter >= self._tipped_threshold
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         below_height_limit = self._robot.data.root_pos_w[:, 2] < self.min_height_threshold
         target_timeout = self._target_timer > self._target_timeout
-
-        # Obtener la gravedad proyectada en el sistema de referencia del cuerpo
-        projected_gravity_b = self._robot.data.projected_gravity_b
-        gravity_norm = torch.norm(projected_gravity_b, dim=1)
-        cos_tilt = -projected_gravity_b[:, 2] / gravity_norm
-        tilt_angle = torch.acos(cos_tilt.clamp(-1.0, 1.0))
-        
-        # Detección de robot tumbado (ángulo > 90 grados)
-        is_tipped_current = tilt_angle > self._max_tilt_rad
-        
-        # Incrementar el contador para robots tumbados
-        self._tipped_counter[is_tipped_current] += 1
-        self._tipped_counter[~is_tipped_current] = 0
-        
-        # Consideramos tumbado persistente después de varios frames
-        tipped_persistent = self._tipped_counter >= self._tipped_threshold
-
-        # Detectar contacto actual de pantorrillas
-        calf_contact_current = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._calf_ids], dim=-1), dim=1)[0] > 0.0, dim=1)  # type: ignore
-
-        # Incrementar contador
-        self._calf_contact_counter[calf_contact_current] += 1
-        self._calf_contact_counter[~calf_contact_current] = 0
-
-        # Comprobar si el contacto es persistente
-        calf_contact_persistent = self._calf_contact_counter >= self._calf_contact_threshold
 
         # Set termination reasons
         self._termination_reason[:] = 0
@@ -525,15 +442,17 @@ class AnymalCEnv(DirectRLEnv):
 
         return base_contact_persistent | time_out | below_height_limit | thigh_contact_persistent | target_timeout | tipped_persistent | calf_contact_persistent, self.task_completed
 
+    # Definicion de reseteos -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES  # type: ignore
+
         self._robot.reset(env_ids)  # type: ignore
         super()._reset_idx(env_ids)  # type: ignore
 
         position_variation = torch.rand((len(env_ids), 2), device=self.device) * 1 - 0.3
         random_yaw = torch.rand((len(env_ids),), device=self.device) * 2 * 3.14159  # Ángulo aleatorio entre 0 y 2π
-        
+
         qw = torch.cos(random_yaw * 0.5) 
         qx = torch.zeros_like(random_yaw)
         qy = torch.zeros_like(random_yaw)
@@ -542,40 +461,52 @@ class AnymalCEnv(DirectRLEnv):
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
         self._commands[env_ids] = torch.zeros_like(self._commands[env_ids]).uniform_(-1.0, 1.0)
-        
-        # Calculate terrain index based on env_id modulo 6
-        terrain_indices = env_ids % 6
-        
-        # Define different terrain origins for each modulo result
-        #terrain_origins = torch.tensor([
-        #    [3.5, -6.6, 0.2],   # Terrain 0
-        #    [3.5, -1.8, 0.2],   # Terrain 1
-        #    [3.5, 3.0, 0.2],    # Terrain 2
-        #    [-1.3, -6.6, 0.2],  # Terrain 3
-        #    [-1.3, -1.8, 0.2],  # Terrain 4
-        #    [-1.3, 3.0, 0.2],   # Terrain 5
-        #], device=self.device)
-#
-        terrain_origins = torch.tensor([
-            [3.5, -1.8, 0.2],   # Terrain 0
-            [3.5, -1.8, 0.2],   # Terrain 1
-            [3.5, -1.8, 0.2],    # Terrain 2
-            [3.5, -1.8, 0.2],  # Terrain 3
-            [3.5, -1.8, 0.2],  # Terrain 4
-            [3.5, -1.8, 0.2],   # Terrain 5
-        ], device=self.device)
-#
 
-        
+       # terrain_indices = self._circuits_advanced[env_id].item()  # env_ids % 6
+       # terrain_origins = torch.tensor([
+       #     [3.5, -6.6, 0.2],   
+       #     [3.5, -1.8, 0.2],
+       #     [3.5, 3.0, 0.2],
+       #     [-1.3, -6.6, 0.2],
+       #     [-1.3, -1.8, 0.2],
+       #     [-1.3, 3.0, 0.2],
+#
+#
+       #        # [3.5, -1.8, 0.2],
+       #        # [3.5, -1.8, 0.2],
+       #        # [3.5, -1.8, 0.2],
+       #        # [3.5, -1.8, 0.2],
+       #        # [3.5, -1.8, 0.2],
+       #        # [3.5, -1.8, 0.2],
+       # ], device=self.device)
+
         # Set terrain origins based on modulo result
         for i, env_id in enumerate(env_ids):
-            terrain_idx = terrain_indices[i].item()
+
+            terrain_origins = torch.tensor([
+                [3.5, -6.6, 0.2],
+                [-1.3, -6.6, 0.2],
+                [3.5, -1.8, 0.2],
+                [3.5, 3.0, 0.2],
+                [-1.3, -1.8, 0.2],
+                [-1.3, 3.0, 0.2],
+
+
+               # [3.5, -1.8, 0.2],
+               # [3.5, -1.8, 0.2],
+               # [3.5, -1.8, 0.2],
+               # [3.5, -1.8, 0.2],
+               # [3.5, -1.8, 0.2],
+               # [3.5, -1.8, 0.2],
+            ], device=self.device)
+
+            terrain_idx = self._circuits_advanced[env_id].item()  # terrain_indices[i].item()
             self._terrain.env_origins[env_id] = terrain_origins[terrain_idx]  # type: ignore
-        
+
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
-        
+
         # Add position variation and set root state
         for i, env_id in enumerate(env_ids):
             # Aplicar variación normal y un offset base
@@ -612,7 +543,7 @@ class AnymalCEnv(DirectRLEnv):
         
         # Set waypoints based on terrain index
         for i, env_id in enumerate(env_ids):
-            terrain_idx = terrain_indices[i].item()
+            terrain_idx = self._circuits_advanced[env_id].item()  # terrain_indices[i].item()
             waypoints = waypoint_offsets[terrain_idx]  # type: ignore
             
             # Aplicar el offset de curriculum a los waypoints también
