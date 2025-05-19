@@ -68,7 +68,7 @@ class EventCfg:
 @configclass
 class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 20.0
+    episode_length_s = 100.0
     decimation = 4
     action_scale = 0.25
     action_space = 12
@@ -121,12 +121,13 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
 
     # reward scales
 
-    joint_torque_reward_scale = -2e-6
+    joint_torque_reward_scale = -2e-4
     joint_accel_reward_scale = -2.5e-7
-    action_rate_reward_scale = -0.01
+    action_rate_reward_scale = -0.02
     feet_air_time_reward_scale = 0.01
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
+    feet_slide_reward_scale = -0.5  # Penalize feet sliding with a scale of -0.1
 
 
 @configclass
@@ -134,7 +135,7 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     # env
     # observation_space = 235
     # conos
-    observation_space = 235
+    observation_space = 239
 
     #    terrain = TerrainImporterCfg(
     #        prim_path="/World/ground",
@@ -180,7 +181,6 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     )
 
     # reward scales (override from flat config)
-    flat_orientation_reward_scale = 0.0
 
 
 class AnymalCEnv(DirectRLEnv):
@@ -220,14 +220,16 @@ class AnymalCEnv(DirectRLEnv):
                 "undesired_contacts",
                 "flat_orientation_l2",
                 "base_contact_penalty",  # Add this if it's not already there
+                "feet_slide",  # Add feet sliding penalty
+                "constant_penalty",  # Add constant penalty
             ]
         }
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*_foot")
         
-        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*thigh")
-        self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
+        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*_thigh |.*base")
+
 
         # los de los conos
         self.env_spacing = self.scene.cfg.env_spacing
@@ -319,6 +321,7 @@ class AnymalCEnv(DirectRLEnv):
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
 
+
         height_data = None
         if isinstance(self.cfg, AnymalCRoughEnvCfg):
             height_data = (
@@ -338,6 +341,8 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.projected_gravity_b,
                     self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                     self._robot.data.joint_vel,
+                    #feet contacts only 1 or 0
+                    self._contact_sensor.data.net_forces_w_history [:, :, self._feet_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0, # type: ignore
                     height_data,
                     self._actions,
 
@@ -351,12 +356,14 @@ class AnymalCEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
 
-        # Conos
 
+        constant_penalty = torch.full((self.num_envs,), 0 * self.step_dt, device=self.device)
+
+        
+        # Conos
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
-        target_heading_rew = torch.exp(
-            -torch.abs(self.target_heading_error) / self.heading_coefficient
-        )
+        target_heading_rew = torch.cos(self.target_heading_error) + 1  # Normalizado entre 0 y 2
+
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
@@ -381,6 +388,10 @@ class AnymalCEnv(DirectRLEnv):
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]  # type: ignore
         air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1)
 
+        # feet sliding
+        feet_contact = self._contact_sensor.data.net_forces_w_history [:, :, self._feet_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0 # type: ignore
+        feet_vel = self._robot.data.body_lin_vel_w[:, self._feet_ids, :2]
+        feet_slide = torch.sum(feet_vel.norm(dim=-1) * feet_contact, dim=1)
 
         # undesired contacts
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
@@ -401,26 +412,12 @@ class AnymalCEnv(DirectRLEnv):
         
         base_contact_penalty = torch.sum(base_contact_forces > 1.5, dim=1)  # Increased threshold from 1.0 to 1.5
  
-    
         # flat orientation
         flat_orientation = torch.sum(
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
         )
+        
 
-        # print("position progress reward: ", position_progress_rew)
-        # print("target heading reward: ", target_heading_rew)
-        # print("goal reached: ", goal_reached)
-        # print("joint torques: ", joint_torques)
-        # print("joint acceleration: ", joint_accel)
-        # print("action rate: ", action_rate)
-        # print("feet air time: ", air_time)
-        # print("undesired contacts: ", contacts)
-        # print("base contact penalty: ", base_contact_penalty)
-        # print("flat orientation: ", flat_orientation)
-        # print("base contact forces: ", base_contact_forces)
-        # print("base contact: ", base_contact_forces > 1.5)
-        # print("base contact penalty: ", base_contact_penalty)
-   
         rewards = {
             # conos
             "position_progress": position_progress_rew * self.position_progress_weight * target_heading_rew,
@@ -438,6 +435,7 @@ class AnymalCEnv(DirectRLEnv):
             "feet_air_time": air_time
             * self.cfg.feet_air_time_reward_scale
             * self.step_dt,
+            "feet_slide": feet_slide * self.cfg.feet_slide_reward_scale * self.step_dt,  # Add feet sliding penalty with a scale of -0.1
             "undesired_contacts": contacts
             * self.cfg.undesired_contact_reward_scale
             * self.step_dt,
@@ -445,6 +443,8 @@ class AnymalCEnv(DirectRLEnv):
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
             "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
+            # Add constant penalty
+            "constant_penalty": constant_penalty,
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -510,6 +510,7 @@ class AnymalCEnv(DirectRLEnv):
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
+        
         default_root_state = self._robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self._terrain.env_origins[env_ids]
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)  # type: ignore

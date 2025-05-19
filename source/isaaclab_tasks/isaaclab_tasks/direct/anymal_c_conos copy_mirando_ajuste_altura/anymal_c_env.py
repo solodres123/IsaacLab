@@ -33,7 +33,7 @@ from .waypoint import WAYPOINT_CFG
 
 ##
 # Pre-defined configs
-from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
+##
 from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG
 #  from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
 
@@ -70,7 +70,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 20.0
     decimation = 4
-    action_scale = 0.25
+    action_scale = 0.5
     action_space = 12
     observation_space = 48
     state_space = 0
@@ -88,8 +88,6 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
             restitution=0.0,
         ),
     )
-
-
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -106,7 +104,7 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=4.0, replicate_physics=True
+        num_envs=4096, env_spacing=10.0, replicate_physics=True
     )
 
     # events
@@ -123,12 +121,14 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
 
     # reward scales
 
-    joint_torque_reward_scale = -2e-4
+    joint_torque_reward_scale = -2e-6
     joint_accel_reward_scale = -2.5e-7
-    action_rate_reward_scale = -0.01
+    action_rate_reward_scale = -0.02
     feet_air_time_reward_scale = 0.01
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
+    feet_slide_reward_scale = -0.1  # Penalize feet sliding with a scale of -0.1
+    base_height_reward_scale = 0  # Penalize base height deviation with a scale of -0.1
 
 
 @configclass
@@ -136,23 +136,37 @@ class AnymalCRoughEnvCfg(AnymalCFlatEnvCfg):
     # env
     # observation_space = 235
     # conos
-    observation_space = 238
+    observation_space = 235
+
+    #    terrain = TerrainImporterCfg(
+    #        prim_path="/World/ground",
+    #        terrain_type="generator",
+    #        terrain_generator=ROUGH_TERRAINS_CFG,
+    #        max_init_terrain_level=9,
+    #        collision_group=-1,
+    #        physics_material=sim_utils.RigidBodyMaterialCfg(
+    #            friction_combine_mode="multiply",
+    #            restitution_combine_mode="multiply",
+    #            static_friction=1.0,
+    #            dynamic_friction=1.0,
+    #        ),
+    #        visual_material=sim_utils.MdlFileCfg(
+    #            mdl_path="{NVIDIA_NUCLEUS_DIR}/Materials/Base/Architecture/Shingles_01.mdl",
+    #            project_uvw=True,
+    #        ),
+    #        debug_vis=False,
+    #    )
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="generator",
-        terrain_generator=ROUGH_TERRAINS_CFG,
-        max_init_terrain_level=9,
+        terrain_type="plane",
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
             static_friction=1.0,
             dynamic_friction=1.0,
-        ),
-        visual_material=sim_utils.MdlFileCfg(
-            mdl_path="{NVIDIA_NUCLEUS_DIR}/Materials/Base/Architecture/Shingles_01.mdl",
-            project_uvw=True,
+            restitution=0.0,
         ),
         debug_vis=False,
     )
@@ -194,9 +208,6 @@ class AnymalCEnv(DirectRLEnv):
             device=self.device,
         )
 
-        # X/Y linear velocity and yaw angular velocity commands
-        self._commands = torch.zeros(self.num_envs, 3, device=self.device)
-
         # Logging
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -211,11 +222,14 @@ class AnymalCEnv(DirectRLEnv):
                 "undesired_contacts",
                 "flat_orientation_l2",
                 "base_contact_penalty",  # Add this if it's not already there
+                "feet_slide",  # Add feet sliding penalty
+                "base_height_penalty"
             ]
         }
         # Get specific body indices
         self._base_id, _ = self._contact_sensor.find_bodies("base")
-        self._feet_ids, _ = self._contact_sensor.find_bodies(".*foot")
+        self._feet_ids, _ = self._contact_sensor.find_bodies(".*_foot")
+        
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*thigh")
         self._undesired_contact_body_ids += self._base_id  # Añadir el ID de la base a la lista de contactos no deseados
 
@@ -234,8 +248,8 @@ class AnymalCEnv(DirectRLEnv):
         self._markers_pos = torch.zeros(
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
-        self.course_length_coefficient = 4  # 15
-        self.course_width_coefficient = 4  # 15
+        self.course_length_coefficient = 15  # 15
+        self.course_width_coefficient = 15  # 15
         self.position_tolerance = 0.15  # 0.15
         self.goal_reached_bonus = 3.0  # 10.0
         self.position_progress_weight = 5.0  # 1.0  # 5000.0
@@ -326,7 +340,6 @@ class AnymalCEnv(DirectRLEnv):
                     self._robot.data.root_lin_vel_b,
                     self._robot.data.root_ang_vel_b,
                     self._robot.data.projected_gravity_b,
-                    self._commands,
                     self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                     self._robot.data.joint_vel,
                     height_data,
@@ -341,19 +354,7 @@ class AnymalCEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        # Linear velocity tracking
-        # lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1)
-        # lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
-
-        # Yaw rate tracking
-        # yaw_rate_error = torch.square(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
-        # yaw_rate_error_mapped = torch.exp(-yaw_rate_error / 0.25)
-
-        # Z velocity tracking
-        # ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
-
         # Conos
-
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
         target_heading_rew = torch.exp(
             -torch.abs(self.target_heading_error) / self.heading_coefficient
@@ -380,9 +381,13 @@ class AnymalCEnv(DirectRLEnv):
             :, self._feet_ids
         ]
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]  # type: ignore
-        air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1) * (
-            torch.norm(self._commands[:, :2], dim=1) > 0.1
-        )
+        air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1)
+
+        # feet sliding
+        feet_contact = self._contact_sensor.data.net_forces_w_history [:, :, self._feet_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0 # type: ignore
+        feet_vel = self._robot.data.body_lin_vel_w[:, self._feet_ids, :2]
+        feet_slide = torch.sum ( torch.square(feet_vel.norm(dim=-1) * feet_contact), dim=1 ) 
+
         # undesired contacts
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
         is_contact = (
@@ -402,16 +407,35 @@ class AnymalCEnv(DirectRLEnv):
         
         base_contact_penalty = torch.sum(base_contact_forces > 1.5, dim=1)  # Increased threshold from 1.0 to 1.5
  
-        
-
         # flat orientation
         flat_orientation = torch.sum(
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
         )
 
+
+            # Base height minimum threshold reward
+        target_height = 0.50  # Target minimum height for the robot base
+        
+        # Get current base height
+        current_height = self._robot.data.root_pos_w[:, 2]
+        
+        # For rough terrain, adjust target height using height scanner if available
+        if isinstance(self.cfg, AnymalCRoughEnvCfg) and hasattr(self, '_height_scanner'):
+            # Compute average terrain height under the robot
+            terrain_height = torch.mean(self._height_scanner.data.ray_hits_w[..., 2], dim=1)
+            adjusted_target_height = target_height + terrain_height
+        else:
+            # For flat terrain, use fixed target height
+            adjusted_target_height = target_height
+
+        # Only penalize if the robot is below the target height
+        height_diff = adjusted_target_height - current_height
+        base_height_penalty = torch.nn.functional.relu(height_diff)  # ReLU ensures penalty only when below target
+        base_height_penalty = torch.square(base_height_penalty)  # L2 squared penalty
+
         rewards = {
             # conos
-            "position_progress": position_progress_rew * self.position_progress_weight,
+            "position_progress": position_progress_rew * self.position_progress_weight * target_heading_rew,
             "target_heading": target_heading_rew * self.heading_progress_weight,
             "goal_reached": goal_reached * self.goal_reached_bonus,
             "dof_torques_l2": joint_torques
@@ -426,6 +450,7 @@ class AnymalCEnv(DirectRLEnv):
             "feet_air_time": air_time
             * self.cfg.feet_air_time_reward_scale
             * self.step_dt,
+            "feet_slide": feet_slide * self.cfg.feet_slide_reward_scale * self.step_dt,  # Add feet sliding penalty with a scale of -0.1
             "undesired_contacts": contacts
             * self.cfg.undesired_contact_reward_scale
             * self.step_dt,
@@ -433,6 +458,7 @@ class AnymalCEnv(DirectRLEnv):
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
             "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
+            "base_height_penalty": base_height_penalty * self.cfg.base_height_reward_scale * self.step_dt,
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
@@ -494,10 +520,7 @@ class AnymalCEnv(DirectRLEnv):
             
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
-        # Sample new commands
-        self._commands[env_ids] = torch.zeros_like(self._commands[env_ids]).uniform_(
-            -1.0, 1.0
-        )
+
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
@@ -511,8 +534,8 @@ class AnymalCEnv(DirectRLEnv):
         self._markers_pos[env_ids, :, :] = 0.0
 
         # Define el rango de dispersión en el área (ajústalo según tu escena)
-        x_range = (-4.0, 4.0)
-        y_range = (-4.0, 4.0)
+        x_range = (-2.0, 2.0)
+        y_range = (-2.0, 2.0)
 
         # Generar posiciones aleatorias en el área definida
         self._target_positions[env_ids, :, 0] = (
@@ -525,10 +548,8 @@ class AnymalCEnv(DirectRLEnv):
             * (y_range[1] - y_range[0]) + y_range[0]
         )
 
-        for i, env_id in enumerate(env_ids):
-
-            # Aplicar el desplazamiento por entorno
-            self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
+        # Aplicar el desplazamiento por entorno
+        self._target_positions[env_ids, :] += self.scene.env_origins[env_ids, :2].unsqueeze(1)
 
         self._target_index[env_ids] = 0
         self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]

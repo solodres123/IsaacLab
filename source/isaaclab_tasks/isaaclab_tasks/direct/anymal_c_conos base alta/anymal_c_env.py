@@ -127,6 +127,8 @@ class AnymalCFlatEnvCfg(DirectRLEnvCfg):
     feet_air_time_reward_scale = 0.01
     undesired_contact_reward_scale = -1.0  # -1.0
     flat_orientation_reward_scale = -5.0
+    base_height_reward_scale = -10
+
 
 
 @configclass
@@ -219,7 +221,8 @@ class AnymalCEnv(DirectRLEnv):
                 "feet_air_time",
                 "undesired_contacts",
                 "flat_orientation_l2",
-                "base_contact_penalty",  # Add this if it's not already there
+                "base_contact_penalty", 
+                "base_height_l2"
             ]
         }
         # Get specific body indices
@@ -353,6 +356,9 @@ class AnymalCEnv(DirectRLEnv):
 
         # Conos
 
+        target_height =0.5
+        self._adjusted_target_height = target_height + torch.mean( self._height_scanner.data.ray_hits_w[..., 2], dim=1)
+
         position_progress_rew = torch.nn.functional.elu(self._previous_position_error - self._position_error)
         target_heading_rew = torch.exp(
             -torch.abs(self.target_heading_error) / self.heading_coefficient
@@ -407,6 +413,12 @@ class AnymalCEnv(DirectRLEnv):
             torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1
         )
 
+  
+        base_height_l2= torch.square(self._robot.data.root_pos_w[:, 2] - self._adjusted_target_height)
+
+
+
+
         # print("position progress reward: ", position_progress_rew)
         # print("target heading reward: ", target_heading_rew)
         # print("goal reached: ", goal_reached)
@@ -445,6 +457,7 @@ class AnymalCEnv(DirectRLEnv):
             * self.cfg.flat_orientation_reward_scale
             * self.step_dt,
             "base_contact_penalty": base_contact_penalty * self.base_contact_penalty_weight,
+            "base_height_l2": base_height_l2 * self.cfg.base_height_reward_scale * self.step_dt,
         }
         
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
